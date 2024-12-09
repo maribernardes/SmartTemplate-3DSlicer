@@ -129,9 +129,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     ####################################
 
     # Internal variables
-    self.robotLoaded = False
-    self.robotRegistered = False
-
+    self.IsRobotLoaded = False  # Is the robot loaded?
+    
     # Initialize module logic
     self.logic = SmartTemplateLogic()
 
@@ -141,11 +140,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # These connections ensure that we update parameter node when scene is closed
     self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
     self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
-    # self.addObserver(slicer.mrmlScene, slicer.vtkMRMLScene.NodeAddedEvent, self.nodeAddedCallback)
 
-    # This connection updates the needle shape when a new message comes
-    # self.addObserver(self.logic.needleShapeHeaderNode, slicer.vtkMRMLTextNode.TextModifiedEvent, self.onNeedleShapeChange)
-        
     # These connections ensure that whenever user changes some settings on the GUI, that is saved in the MRML scene
     # (in the selected parameter node).
     self.zTransformSelector.connect('currentNodeChanged(vtkMRMLNode*)', self.updateParameterNodeFromGUI)
@@ -159,7 +154,6 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Initialize widget variables and updateGUI
     self.updateGUI()
     self.pointListSelector.setCurrentNode(self.logic.pointListNode)
-    # self.pointListSelector.markupsPlaceWidget().placeButton().setChecked(False)
     interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
     interactionNode.SetCurrentInteractionMode(interactionNode.ViewTransform)  # Instead of interactionNode.Place
 
@@ -231,7 +225,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Update node selectors and input boxes and sliders
     self.zTransformSelector.setCurrentNode(self._parameterNode.GetNodeReference('ZTransform'))
     self.pointListSelector.setCurrentNode(self._parameterNode.GetNodeReference('Planning'))
-    
+    self.IsRobotLoaded = self._parameterNode.GetParameter('RobotLoaded') == 'True'
     self.updateGUI()
     # All the GUI updates are done
     self._updatingGUIFromParameterNode = False
@@ -262,25 +256,24 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Check status
     zFrameSelected = (self.zTransformSelector.currentNode() is not None)
     pointsSelected = (self.logic.getNumberOfPoints(self.pointListSelector.currentNode()) == 2)
-    robotLoaded = False if self.logic.robotNode is None else True
     robotRegistered = False if self.logic.mat_RobotToScanner is None else True
 
     # Update buttons accordingly
-    self.loadButton.enabled = not robotLoaded
-    self.registerButton.enabled = zFrameSelected and robotLoaded
-    self.targetingButton.enabled = pointsSelected and robotRegistered
+    self.loadButton.enabled = not self.IsRobotLoaded
+    self.registerButton.enabled = zFrameSelected and self.IsRobotLoaded
+    self.targetingButton.enabled = pointsSelected and robotRegistered and self.IsRobotLoaded
     # Update markup widget accordingly
     # self.pointListSelector.placeActive(not pointsSelected)
 
   def loadRobot(self):
     print('UI: loadRobot()')
-    self.robotLoaded = self.logic.loadRobot()
+    self.logic.loadRobot()
     self.updateGUI()
 
   def registerRobot(self):
     print('UI: registerRobot()')
     zTransformNode = self.zTransformSelector.currentNode()
-    self.robotRegistered = self.logic.registerRobot(zTransformNode)
+    self.logic.registerRobot(zTransformNode)
     self.updateGUI()
 
   def startTargeting(self):
@@ -338,6 +331,12 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
   # Initialize parameter node with default settings
   def setDefaultParameters(self, parameterNode):
     # self.initialize()
+    if not parameterNode.GetParameter('RobotLoaded'):
+      if self.joint_names is None:
+        isRobotLoaded = 'False'
+      else:
+        isRobotLoaded = 'True'
+      parameterNode.SetParameter('RobotLoaded', isRobotLoaded)  
     if not parameterNode.GetNodeReference('Planning'):
       parameterNode.SetNodeReferenceID('Planning', self.pointListNode.GetID())
 
@@ -351,10 +350,26 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
   # Wait for robot_description parameter to define joint_names and joint_limits  
   @vtk.calldata_type(vtk.VTK_OBJECT)
   def onParamModified(self, caller, calldata):
-    paramNode = caller
-    if paramNode.GetMonitoredNodeName() == '/robot_state_publisher':
-      if self.extractRobotJoints(paramNode):
-        paramNode.RemoveObserver(self.observeParamNode)
+    if caller.GetMonitoredNodeName() == '/robot_state_publisher':
+      if self.extractRobotJoints(caller):
+        moduleParameterNode = self.getParameterNode()
+        moduleParameterNode.SetParameter('RobotLoaded', 'True')
+        caller.RemoveObserver(self.observeParamNode)
+        self.observeNeedleDisplayNode = slicer.mrmlScene.AddObserver(slicer.vtkMRMLScene.NodeAddedEvent, self.onNodeAdded)
+
+  # Wait for DiplayNode to needle_link_model to be added
+  # TODO: Make the event come from the addition of a referencenode in robotNode
+  @vtk.calldata_type(vtk.VTK_OBJECT)
+  def onNodeAdded(self, caller, eventid, calldata):
+    node_name = calldata.GetName()
+    N = self.robotNode.GetNumberOfNodeReferenceRoles()
+    if node_name == 'ROS2Tf2Lookup_'+str(N):
+      needle_name = self.robotNode.GetNthNodeReferenceID('model', N)
+      needle_node = slicer.mrmlScene.GetNodeByID(needle_name)
+      needle_display = needle_node.GetDisplayNode()
+      self.setNeedleDisplay(needle_display)
+      caller.RemoveObserver(self.observeNeedleDisplayNode)
+
 
   def extractRobotJoints(self, paramNode):
     if paramNode is None:
@@ -382,27 +397,25 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       print('Robot description not available')
       return False
 
-  def setNeedleDisplay(self):
-    needle_node = self.robotNode.GetNthNodeReferenceID('model', self.robotNode.GetNumberOfNodeReferenceRoles())
-    needle_model = slicer.mrmlScene.GetNodeByID(needle_node)
-    print('Make %s visible in slices' %needle_model.GetName())
-    display_needle = needle_model.GetDisplayNode()
-    if display_needle is None:
-      display_needle = slicer.vtkMRMLModelDisplayNode()
-      needle_model.SetAndObserveDisplayNodeID(display_needle.GetID())
-    display_needle.SetVisibility2D(True)
-    display_needle.SetColor(1.0, 0.0, 1.0)
-    display_needle.SetSliceIntersectionThickness(2)
-        
-      # Call showVolumeRendering using a timer instead of calling it directly
-      # to allow the volume loading to fully complete.
-      # qt.QTimer.singleShot(0, lambda: showVolumeRendering(node))
-      # slicer.mrmlScene.RemoveObserver(self.needleNodeObserverId)
+  def setNeedleDisplay(self, display_node):
+    # needle_node = self.robotNode.GetNthNodeReferenceID('model', self.robotNode.GetNumberOfNodeReferenceRoles())
+    # needle_model = slicer.mrmlScene.GetNodeByID(needle_node)
+    # print('Make %s visible in slices' %needle_model.GetName())
+    # display_needle = needle_model.GetDisplayNode()
+    # # if display_needle is None:
+    # #   display_needle = slicer.vtkMRMLModelDisplayNode()
+    # #   needle_model.SetAndObserveDisplayNodeID(display_needle.GetID())
+    display_node.SetVisibility2D(True)
+    display_node.SetColor(1.0, 0.0, 1.0)
+    display_node.SetSliceIntersectionThickness(2)
+    
+
 
   def loadRobot(self):
     # Create robot node and publisher to /world_pose message
     if self.robotNode is None:
       self.robotNode = self.rosNode.CreateAndAddRobotNode('smart_template','/robot_state_publisher','robot_description', 'world', '' ) 
+      # self.observeRobotNode = self.robotNode.AddObserver(slicer.vtkMRMLROS2RobotNode.ReferenceAddedEvent, self.onReferenceAdded)
       paramNode = slicer.util.getNode(self.robotNode.GetNodeReferenceID('parameter'))
       self.observeParamNode = paramNode.AddObserver(slicer.vtkMRMLROS2ParameterNode.ParameterModifiedEvent, self.onParamModified)
       if self.pubWorld is None:
@@ -411,7 +424,6 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         self.pubEntry = self.rosNode.CreateAndAddPublisherNode('Point', '/planning/skin_entry')
       if self.pubTarget is None:
         self.pubTarget = self.rosNode.CreateAndAddPublisherNode('Point', '/planning/target')
-      # observationId = self.rosNode.AddObserver(slicer.vtkMRMLROS2ParameterNode.ParameterModifiedEvent, self.onParameterChanged)
       print('Robot initialized')
     else:
       print('Robot already intialized')
@@ -441,7 +453,6 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       world_msg.SetTransform(self.mat_RobotToScanner)
       self.pubWorld.Publish(world_msg)
       self.printVtkMatrix4x4(self.mat_RobotToScanner, '\world_pose')
-      self.setNeedleDisplay()
       return True
 
   def getNumberOfPoints(self, pointListNode):
