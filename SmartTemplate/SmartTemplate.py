@@ -325,8 +325,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
           value_layout = qt.QHBoxLayout()
           value_layout.addWidget(current_value_label)
           value_layout.addWidget(current_value_box)
-          value_layout.addWidget(desired_value_label)
-          value_layout.addWidget(desired_value_box)
+          # value_layout.addWidget(desired_value_label)
+          # value_layout.addWidget(desired_value_box)
 
           # Layout for each joint
           joint_layout = qt.QVBoxLayout()
@@ -345,7 +345,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
           # Save references
           self.sliders[joint] = slider
-          self.text_boxes[joint] = desired_value_box
+          # self.text_boxes[joint] = desired_value_box
           self.current_value_boxes[joint] = current_value_box
 
   def loadRobot(self):
@@ -432,7 +432,6 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         print(matrix4x4.GetElement(i, j), end=" ")
       print()
 
-  #TODO: Change to create new observer for display node
   # Wait for robot node to be ready
   @vtk.calldata_type(vtk.VTK_OBJECT)
   def onRobotModelReady(self, caller, eventid, calldata):
@@ -441,16 +440,17 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       # print('Robot model %i available' %N_model)
       model_name = self.robotNode.GetNthNodeReferenceID('model', N_model-1)
       needle_node = slicer.mrmlScene.GetNodeByID(model_name)
-      needle_display_node = needle_node.GetDisplayNode()
-      if needle_display_node is None:
+      display_node = needle_node.GetDisplayNode()
+      if display_node is None:
         needle_node.CreateDefaultDisplayNodes()
         display_node = needle_node.GetDisplayNode()
-        display_node.SetVisibility2D(True)
-        display_node.SetColor(1.0, 0.0, 1.0)
-        display_node.SetSliceIntersectionThickness(2)
-        caller.RemoveObserver(self.observeRobotModel)
-    
-  # Wait for robot_description parameter and then define joint_names and joint_limits  
+      # Change display settings
+      display_node.SetVisibility2D(True)
+      display_node.SetColor(1.0, 0.0, 1.0)
+      display_node.SetSliceIntersectionThickness(2)
+      caller.RemoveObserver(self.observeRobotModel)
+  
+  # Wait for robot_description parameter and then define link_names, joint_names and joint_limits  
   @vtk.calldata_type(vtk.VTK_OBJECT)
   def onRobotDescriptioReady(self, caller, calldata):
     if caller.GetMonitoredNodeName() == '/robot_state_publisher':
@@ -484,6 +484,34 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
               upper = 1000*float(limit.get('upper', '0.0'))
               joint_names.append(joint_name)
               joint_limits[joint_name] = {'min': lower, 'max': upper}
+      # Extract zframe_pose
+      custom_parameters = root.find('custom_parameters')
+      if custom_parameters is not None:
+        zframe_pose_element = custom_parameters.find('zframe_pose')
+        if zframe_pose_element is not None:
+          zframe_pose = zframe_pose_element.get('value').strip()
+          # print('ZFrameToRobot (Homogeneous Matrix):', zframe_pose)
+          # Convert to a 4x4 matrix
+          rows = zframe_pose.split('       ')  # Split by rows
+          matrix_values = [list(map(float, row.split())) for row in rows]
+          # Scale the translation elements by 1000
+          matrix_values[0][3] *= 1000  # x translation
+          matrix_values[1][3] *= 1000  # y translation
+          matrix_values[2][3] *= 1000  # z translation          
+          # Create vtkMatrix4x4 and populate it
+          self.mat_ZFrameToRobot = vtk.vtkMatrix4x4()
+          self.mat_RobotToZFrame = vtk.vtkMatrix4x4()
+          for i in range(4):
+            for j in range(4):
+              self.mat_ZFrameToRobot.SetElement(i, j, matrix_values[i][j])
+          self.mat_RobotToZFrame.DeepCopy(self.mat_ZFrameToRobot )
+          self.mat_RobotToZFrame.Invert()
+          self.printVtkMatrix4x4(self.mat_ZFrameToRobot, 'ZFrameToRobot')
+        else:
+          print('zframe_pose not found in custom_parameters.')
+      else:
+        print('custom_parameters section not found.')
+      # Store extracted data in the class attributes
       self.link_names = link_names
       self.joint_names = joint_names
       self.joint_limits = joint_limits
@@ -533,16 +561,16 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       return False
     else:
       if self.mat_RobotToScanner is None:
-        self.mat_RobotToZFrame = vtk.vtkMatrix4x4()
+        # self.mat_RobotToZFrame = vtk.vtkMatrix4x4()
         self.mat_ZFrameToScanner = vtk.vtkMatrix4x4()
         self.mat_RobotToScanner =  vtk.vtkMatrix4x4()
         self.mat_ScannerToRobot =  vtk.vtkMatrix4x4()
-        # Load the ZFrameToRobot matrix
-        modulePath = os.path.dirname(os.path.abspath(__file__))
-        filePath = os.path.join(modulePath, 'Files', 'ZFrameToRobot.csv')
-        np_ZFrameToRobot = np.loadtxt(filePath, delimiter=',')
-        self.mat_RobotToZFrame.DeepCopy(np_ZFrameToRobot.flatten(order='C').tolist())
-        self.mat_RobotToZFrame.Invert()
+        # # Load the ZFrameToRobot matrix
+        # modulePath = os.path.dirname(os.path.abspath(__file__))
+        # filePath = os.path.join(modulePath, 'Files', 'ZFrameToRobot.csv')
+        # np_ZFrameToRobot = np.loadtxt(filePath, delimiter=',')
+        # self.mat_RobotToZFrame.DeepCopy(np_ZFrameToRobot.flatten(order='C').tolist())
+        # self.mat_RobotToZFrame.Invert()
       # Update ZFrameToScanner and RobotToScanner/ScannerToRobot
       ZFrameToScanner.GetMatrixTransformToWorld(self.mat_ZFrameToScanner)
       vtk.vtkMatrix4x4.Multiply4x4(self.mat_ZFrameToScanner, self.mat_RobotToZFrame, self.mat_RobotToScanner)
