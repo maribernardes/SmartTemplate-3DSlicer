@@ -140,7 +140,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.isRobotLoaded = False  # Is the robot loaded?
     self.jointNames = None
     self.jointLimits = None
-
+    self.jointValues = None
+    
     # Initialize module logic
     self.logic = SmartTemplateLogic()
 
@@ -150,6 +151,9 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # These connections ensure that we update parameter node when scene is closed
     self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
     self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
+
+    # These connections ensure that we synch jointValues with the logic
+    self.addObserver(self.logic.jointValues, vtk.vtkCommand.ModifiedEvent, self.onJointsChange)
 
     # These connections ensure that whenever user changes some settings on the GUI, that is saved in the MRML scene
     # (in the selected parameter node).
@@ -280,6 +284,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
   def addJoints(self):
     (self.jointNames, self.jointLimits) = self.logic.getDefinedJoints()
+    # Initialize joint values with 0.0 
+    self.jointValues = {joint_name: 0.0 for joint_name in self.jointNames}
     if self.jointNames is None:
       print('Could not load joints')
     else:
@@ -288,66 +294,63 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
       self.sliders = {}
       self.text_boxes = {}
       self.current_value_boxes = {}  # For 'Current [mm]' textboxes
-
       for joint in self.jointNames:
           # Remove '_joint' suffix and capitalize the label
           joint_label = qt.QLabel(f'{joint.replace("_joint", "").capitalize()}')
-
           # Slider for current joint state
           slider = qt.QSlider(qt.Qt.Horizontal)
           limits = self.jointLimits[joint]
-          slider.setMinimum(int(limits['min'] * 100))
-          slider.setMaximum(int(limits['max'] * 100))
+          slider.setMinimum(int(limits['min']))
+          slider.setMaximum(int(limits['max']))
           slider.setEnabled(False)  # Non-editable
-          slider.setValue(0)
-
+          slider.setValue(self.jointValues[joint])
           # Min and Max labels
           min_label = qt.QLabel(f"{limits['min']}")
           max_label = qt.QLabel(f"{limits['max']}")
-
           # Layout for slider and labels
           slider_layout = qt.QHBoxLayout()
           slider_layout.addWidget(min_label)
           slider_layout.addWidget(slider)
           slider_layout.addWidget(max_label)
-
           # Text box for current joint value (non-editable)
           current_value_box = qt.QLineEdit('0.0')
           current_value_box.setReadOnly(True)
           current_value_box.setStyleSheet("background: transparent; border: none; color: black;")
+          current_value_box.setText(str(self.jointValues[joint]))
           current_value_label = qt.QLabel('Current [mm]:')
-
-          # Text box for desired joint value
-          desired_value_box = qt.QLineEdit('0.0')
-          desired_value_label = qt.QLabel('Desired [mm]:')
-
+          # # Text box for desired joint value
+          # desired_value_box = qt.QLineEdit('0.0')
+          # desired_value_label = qt.QLabel('Desired [mm]:')
           # Layout for current and desired values
           value_layout = qt.QHBoxLayout()
           value_layout.addWidget(current_value_label)
           value_layout.addWidget(current_value_box)
           # value_layout.addWidget(desired_value_label)
           # value_layout.addWidget(desired_value_box)
-
           # Layout for each joint
           joint_layout = qt.QVBoxLayout()
           joint_layout.addWidget(joint_label)
           joint_layout.addLayout(slider_layout)
           joint_layout.addLayout(value_layout)
-
           # Add the joint layout to the main joint controls layout
           self.jointsLayout.addLayout(joint_layout)
-
           # Add a horizontal separator line after each joint section
           separator_line = qt.QFrame()
           separator_line.setFrameShape(qt.QFrame.HLine)
           separator_line.setFrameShadow(qt.QFrame.Sunken)
           self.jointsLayout.addWidget(separator_line)
-
           # Save references
           self.sliders[joint] = slider
           # self.text_boxes[joint] = desired_value_box
           self.current_value_boxes[joint] = current_value_box
 
+  # Update sliders and text boxes with current joint values
+  def onJointsChange(self, caller=None, event=None):
+    for joint in self.jointNames:
+      self.jointValues[joint] = float(caller.GetAttribute(joint))
+      self.sliders[joint].setValue(self.jointValues[joint])
+      self.current_value_boxes[joint].setText(f"{self.jointValues[joint]:.2f}")
+   
   def loadRobot(self):
     print('UI: loadRobot()')
     self.logic.loadRobot()
@@ -378,23 +381,26 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.cliParamNode = None
     print('Logic: __init__')
 
-    # SlicerROS2 module
+    # SlicerROS2 module internal variables
     self.rosLogic = slicer.util.getModuleLogic('ROS2')
     self.rosNode = self.rosLogic.GetDefaultROS2Node()
     self.robotNode = self.rosNode.GetRobotNodeByName('smart_template')
     self.pubWorld = self.rosNode.GetPublisherNodeByTopic('/world_pose')
     self.pubEntry = self.rosNode.GetPublisherNodeByTopic('/planning/skin_entry')
     self.pubTarget = self.rosNode.GetPublisherNodeByTopic('/planning/target')
+    self.subJoints = self.rosNode.GetPublisherNodeByTopic('/joint_states')
+
     self.link_names = None
     self.joint_names = None
     self.joint_limits = None
 
+    # If robot node is available, make sure the /robot_state_publisher is up
     if self.robotNode:
       paramNode = self.rosNode.GetParameterNodeByNode('/robot_state_publisher')
-      if not self.extractRobotJoints(paramNode):
+      if not self.extractRobotParameters(paramNode):
         print('Robot missing /robot_state_publisher')
 
-    # Internal variables
+    # Other internal variables
     self.mat_RobotToZFrame = None
     self.mat_ZFrameToScanner = None
     self.mat_RobotToScanner =  None
@@ -409,11 +415,15 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     displayNodePointList = self.pointListNode.GetDisplayNode()
     if displayNodePointList:
       displayNodePointList.SetGlyphScale(1.5)   
-   
+    
+    # Create ScriptedModule node for joint values
+    self.jointValues = slicer.util.getFirstNodeByName('jointValues', className='vtkMRMLScriptedModuleNode')
+    if self.jointValues is None:
+      self.jointValues = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLScriptedModuleNode', 'JointValues')
 
   ### Logic functions ###################################################################
 
-  # Initialize parameter node with default settings
+  # Initialize module parameter node with default settings
   def setDefaultParameters(self, parameterNode):
     # self.initialize()
     if not parameterNode.GetParameter('RobotLoaded'):
@@ -425,6 +435,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     if not parameterNode.GetNodeReference('Planning'):
       parameterNode.SetNodeReferenceID('Planning', self.pointListNode.GetID())
 
+  # Print vtkMatrix4x4 (for debugging)
   def printVtkMatrix4x4(self, matrix4x4, name=''):
     print(name)
     for i in range(4):
@@ -432,9 +443,18 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         print(matrix4x4.GetElement(i, j), end=" ")
       print()
 
-  # Wait for robot node to be ready
-  @vtk.calldata_type(vtk.VTK_OBJECT)
-  def onRobotModelReady(self, caller, eventid, calldata):
+  # Callback for /joints_state messages
+  def onSubJointsMsg(self, caller=None, event=None):
+    joints_msg = self.subJoints.GetLastMessage()
+    # Extract joint names and positions from the message
+    msg_joint_names = joints_msg.GetName()
+    msg_joint_values = joints_msg.GetPosition()
+    for joint_name, joint_value in zip(msg_joint_names, msg_joint_values):
+      self.jointValues.SetAttribute(joint_name, str(1000*joint_value))  # Triggers observer
+    self.jointValues.Modified()
+
+  # Wait for robot models to be ready
+  def onRobotModelReady(self, caller=None, event=None):
     N_model = self.robotNode.GetNumberOfNodeReferences('model')
     if(N_model >= len(self.link_names)):
       # print('Robot model %i available' %N_model)
@@ -449,19 +469,29 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       display_node.SetColor(1.0, 0.0, 1.0)
       display_node.SetSliceIntersectionThickness(2)
       caller.RemoveObserver(self.observeRobotModel)
-  
+
   # Wait for robot_description parameter and then define link_names, joint_names and joint_limits  
   @vtk.calldata_type(vtk.VTK_OBJECT)
   def onRobotDescriptioReady(self, caller, calldata):
     if caller.GetMonitoredNodeName() == '/robot_state_publisher':
       print('Robot description available')
-      if self.extractRobotJoints(caller):
+      if self.extractRobotParameters(caller):
         moduleParameterNode = self.getParameterNode()     # Update module parameter to help synch logic and gui
         moduleParameterNode.SetParameter('RobotLoaded', 'True')
         caller.RemoveObserver(self.observeRobotDescription)
-        self.observeRobotModel = self.robotNode.AddObserver(slicer.vtkMRMLROS2NodeNode.ReferenceAddedEvent, self.onRobotModelReady)
+        self.observeRobotModel = self.robotNode.AddObserver(slicer.vtkMRMLROS2RobotNode.ReferenceAddedEvent, self.onRobotModelReady)
 
-  def extractRobotJoints(self, paramNode):
+  # Get last lookupNode if available    
+  def getLastLookupNode(self):
+    N_lookup = self.robotNode.GetNumberOfNodeReferences('lookup')
+    if(N_lookup >= len(self.link_names)):
+      lookup_name = self.robotNode.GetNthNodeReferenceID('lookup', N_lookup-1)
+      return slicer.mrmlScene.GetNodeByID(lookup_name)
+    else:
+      return None
+
+  # Get info from robot_description
+  def extractRobotParameters(self, paramNode):
     if paramNode is None:
       print('Parameter node is not available')
       return False
@@ -499,14 +529,14 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
           matrix_values[1][3] *= 1000  # y translation
           matrix_values[2][3] *= 1000  # z translation          
           # Create vtkMatrix4x4 and populate it
-          self.mat_ZFrameToRobot = vtk.vtkMatrix4x4()
+          mat_ZFrameToRobot = vtk.vtkMatrix4x4()
           self.mat_RobotToZFrame = vtk.vtkMatrix4x4()
           for i in range(4):
             for j in range(4):
-              self.mat_ZFrameToRobot.SetElement(i, j, matrix_values[i][j])
-          self.mat_RobotToZFrame.DeepCopy(self.mat_ZFrameToRobot )
+              mat_ZFrameToRobot.SetElement(i, j, matrix_values[i][j])
+          self.mat_RobotToZFrame.DeepCopy(mat_ZFrameToRobot )
           self.mat_RobotToZFrame.Invert()
-          self.printVtkMatrix4x4(self.mat_ZFrameToRobot, 'ZFrameToRobot')
+          self.printVtkMatrix4x4(mat_ZFrameToRobot, 'ZFrameToRobot = ')
         else:
           print('zframe_pose not found in custom_parameters.')
       else:
@@ -546,10 +576,9 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         self.pubEntry = self.rosNode.CreateAndAddPublisherNode('Point', '/planning/skin_entry')
       if self.pubTarget is None:
         self.pubTarget = self.rosNode.CreateAndAddPublisherNode('Point', '/planning/target')
-      # if self.lookupNeedle is None:
-        # self.lookupNeedle = self.rosNode.CreateAndAddTf2LookupNode('world', 'needle_link')
-        # self.observerJoints = self.lookupNeedle.AddObserver(slicer.vtkMRMLTransformNode.TransformModifiedEvent, self.onJointsMoved)
-        # print('Added observerJoints')
+      if self.subJoints is None:
+        self.subJoints = self.rosNode.CreateAndAddSubscriberNode('JointState', '/joint_states')
+        self.observeJoints = self.subJoints.AddObserver('ModifiedEvent', self.onSubJointsMsg)
       print('Robot initialized')
     else:
       print('Robot already intialized')
@@ -561,17 +590,9 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       return False
     else:
       if self.mat_RobotToScanner is None:
-        # self.mat_RobotToZFrame = vtk.vtkMatrix4x4()
         self.mat_ZFrameToScanner = vtk.vtkMatrix4x4()
         self.mat_RobotToScanner =  vtk.vtkMatrix4x4()
         self.mat_ScannerToRobot =  vtk.vtkMatrix4x4()
-        # # Load the ZFrameToRobot matrix
-        # modulePath = os.path.dirname(os.path.abspath(__file__))
-        # filePath = os.path.join(modulePath, 'Files', 'ZFrameToRobot.csv')
-        # np_ZFrameToRobot = np.loadtxt(filePath, delimiter=',')
-        # self.mat_RobotToZFrame.DeepCopy(np_ZFrameToRobot.flatten(order='C').tolist())
-        # self.mat_RobotToZFrame.Invert()
-      # Update ZFrameToScanner and RobotToScanner/ScannerToRobot
       ZFrameToScanner.GetMatrixTransformToWorld(self.mat_ZFrameToScanner)
       vtk.vtkMatrix4x4.Multiply4x4(self.mat_ZFrameToScanner, self.mat_RobotToZFrame, self.mat_RobotToScanner)
       vtk.vtkMatrix4x4.Invert(self.mat_RobotToScanner, self.mat_ScannerToRobot)
