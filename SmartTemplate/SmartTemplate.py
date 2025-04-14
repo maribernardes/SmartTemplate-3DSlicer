@@ -284,12 +284,11 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
   def addJoints(self):
     (self.jointNames, self.jointLimits) = self.logic.getDefinedJoints()
-    # Initialize joint values with 0.0 
-    self.jointValues = {joint_name: 0.0 for joint_name in self.jointNames}
     if self.jointNames is None:
       print('Could not load joints')
     else:
-      print('Loading joints in gui')
+      # Initialize joint values with 0.0 
+      self.jointValues = {joint_name: 0.0 for joint_name in self.jointNames}
       # Dictionaries to hold widgets
       self.sliders = {}
       self.text_boxes = {}
@@ -343,10 +342,13 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
           self.sliders[joint] = slider
           # self.text_boxes[joint] = desired_value_box
           self.current_value_boxes[joint] = current_value_box
-
+      print('Loaded joints in gui')
+      
   # Update sliders and text boxes with current joint values
   def onJointsChange(self, caller=None, event=None):
     for joint in self.jointNames:
+      if caller.GetAttribute(joint) is None:
+        return
       self.jointValues[joint] = float(caller.GetAttribute(joint))
       self.sliders[joint].setValue(self.jointValues[joint])
       self.current_value_boxes[joint].setText(f"{self.jointValues[joint]:.2f}")
@@ -386,6 +388,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.rosNode = self.rosLogic.GetDefaultROS2Node()
     self.robotNode = self.rosNode.GetRobotNodeByName('smart_template')
     self.pubWorld = self.rosNode.GetPublisherNodeByTopic('/world_pose')
+    self.pubGoal = self.rosNode.GetPublisherNodeByTopic('/desired_position')
     self.pubEntry = self.rosNode.GetPublisherNodeByTopic('/planning/skin_entry')
     self.pubTarget = self.rosNode.GetPublisherNodeByTopic('/planning/target')
     self.subJoints = self.rosNode.GetPublisherNodeByTopic('/joint_states')
@@ -417,7 +420,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       displayNodePointList.SetGlyphScale(1.5)   
     
     # Create ScriptedModule node for joint values
-    self.jointValues = slicer.util.getFirstNodeByName('jointValues', className='vtkMRMLScriptedModuleNode')
+    self.jointValues = slicer.util.getFirstNodeByName('JointValues', className='vtkMRMLScriptedModuleNode')
     if self.jointValues is None:
       self.jointValues = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLScriptedModuleNode', 'JointValues')
 
@@ -560,7 +563,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
 
   def getDefinedJoints(self):
     if self.joint_names is None:
-      return None
+      return (None, None)
     else:
       return (self.joint_names, self.joint_limits)
 
@@ -572,6 +575,8 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       self.observeRobotDescription = paramNode.AddObserver(slicer.vtkMRMLROS2ParameterNode.ParameterModifiedEvent, self.onRobotDescriptioReady)
       if self.pubWorld is None:
           self.pubWorld = self.rosNode.CreateAndAddPublisherNode('TransformStamped', '/world_pose')
+      if self.pubGoal is None:
+        self.pubGoal = self.rosNode.CreateAndAddPublisherNode('Point', '/desired_position')
       if self.pubEntry is None:
         self.pubEntry = self.rosNode.CreateAndAddPublisherNode('Point', '/planning/skin_entry')
       if self.pubTarget is None:
@@ -629,18 +634,29 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     # Align entry with target (in robot coordinates)
     entry = [target[0], entry[1], target[2], 1.0]
     # Publish entry message
+    goal_msg = self.pubGoal.GetBlankMessage()
+    goal_msg.SetX(entry[0])
+    goal_msg.SetY(entry[1])
+    goal_msg.SetZ(entry[2])
+    self.pubGoal.Publish(goal_msg)
+    print('Goal sent')
+    print("Last message sent: {}.".format(goal_msg))
+    
+    # Publish entry message
     entry_msg = self.pubEntry.GetBlankMessage()
     entry_msg.SetX(entry[0])
     entry_msg.SetY(entry[1])
     entry_msg.SetZ(entry[2])
     self.pubEntry.Publish(entry_msg)
+    '''
     # Publish target message
     target_msg = self.pubTarget.GetBlankMessage()
     target_msg.SetX(target[0])
     target_msg.SetY(target[1])
     target_msg.SetZ(target[2])
     self.pubTarget.Publish(target_msg)
-    # Update entry scanner in markups list
+    '''
+    # Update entry scanner in markups list (to align with target)
     entry_scanner = self.mat_RobotToScanner.MultiplyPoint(entry)
     entry_scanner = entry_scanner[0:3]
     pointListNode.SetNthControlPointPosition(pointListNode.GetControlPointIndexByLabel('ENTRY'), entry_scanner)
