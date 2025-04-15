@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 # import sitkUtils
 import numpy as np
 from time import sleep
+import datetime
 
 class SmartTemplate(ScriptedLoadableModule):
 
@@ -313,12 +314,12 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
       self.addJoints()
     # self.pointListSelector.placeActive(not pointsSelected)
 
-  def format3DPoint(self, point, frame=None, decimals=4):
+  def format3DPoint(self, point, frame=None, decimals=2):
     formatted = f"({point[0]:.{decimals}f}, {point[1]:.{decimals}f}, {point[2]:.{decimals}f})"
     if frame:
         formatted += f" {frame}"
     return formatted
-  
+
   def addJoints(self):
     (self.jointNames, self.jointLimits) = self.logic.getDefinedJoints()
     if self.jointNames is None:
@@ -354,15 +355,10 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
           current_value_box.setStyleSheet("background: transparent; border: none; color: black;")
           current_value_box.setText(str(self.jointValues[joint]))
           current_value_label = qt.QLabel('Current [mm]:')
-          # # Text box for desired joint value
-          # desired_value_box = qt.QLineEdit('0.0')
-          # desired_value_label = qt.QLabel('Desired [mm]:')
-          # Layout for current and desired values
+          # Layout for current joint values
           value_layout = qt.QHBoxLayout()
           value_layout.addWidget(current_value_label)
           value_layout.addWidget(current_value_box)
-          # value_layout.addWidget(desired_value_label)
-          # value_layout.addWidget(desired_value_box)
           # Layout for each joint
           joint_layout = qt.QVBoxLayout()
           joint_layout.addWidget(joint_label)
@@ -377,9 +373,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
           self.jointsLayout.addWidget(separator_line)
           # Save references
           self.sliders[joint] = slider
-          # self.text_boxes[joint] = desired_value_box
           self.current_value_boxes[joint] = current_value_box
-      print('Loaded joints in gui')
+
 
   # Update sliders and text boxes with current joint values
   def onJointsChange(self, caller=None, event=None):
@@ -405,7 +400,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
       self.positionRASTextbox.setText(self.format3DPoint(robotPositionRAS, 'RAS'))
     else:
       self.positionRASTextbox.setText('(---, ---, ---)')
-
+    self.timeStampTextbox.setText(self.logic.robotPositionTimestamp.GetText())
 
   def loadRobot(self):
     print('UI: loadRobot()')
@@ -475,11 +470,11 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         self.robotToScannerTransformNode.SetName('RobotToScannerTransform')
         slicer.mrmlScene.AddNode(self.robotToScannerTransformNode)
     # Robot position message header
-    self.robotPositionHeaderNode = slicer.util.getFirstNodeByName('RobotPositionHeader', className='vtkMRMLTextNode')
-    if self.robotPositionHeaderNode is None:
-      self.robotPositionHeaderNode = slicer.vtkMRMLTextNode()
-      self.robotPositionHeaderNode.SetName('RobotPositionHeader')
-      slicer.mrmlScene.AddNode(self.robotPositionHeaderNode)
+    self.robotPositionTimestamp = slicer.util.getFirstNodeByName('RobotPositionTimestamp', className='vtkMRMLTextNode')
+    if self.robotPositionTimestamp is None:
+      self.robotPositionTimestamp = slicer.vtkMRMLTextNode()
+      self.robotPositionTimestamp.SetName('RobotPositionTimestamp')
+      slicer.mrmlScene.AddNode(self.robotPositionTimestamp)
     # Robot position markups node
     self.robotPosition = slicer.util.getFirstNodeByName('RobotPosition', className='vtkMRMLMarkupsFiducialNode')
     if self.robotPosition is None:
@@ -549,6 +544,14 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         print(matrix4x4.GetElement(i, j), end=" ")
       print()
 
+  def formatTimestampToLocalTimeText(self, sec, nanosec):
+    # Convert to seconds as float
+    timestamp_sec = sec + nanosec / 1e9
+    # Convert to local datetime
+    dt = datetime.datetime.fromtimestamp(timestamp_sec)
+    # Format: HH:MM:SS.mmm
+    return dt.strftime('%H:%M:%S.') + f"{int(dt.microsecond / 1000):03d}"
+  
   # Callback for /joints_state messages
   def onSubJointsMsg(self, caller=None, event=None):
     joints_msg = self.subJoints.GetLastMessage()
@@ -562,6 +565,12 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
   # Callback for /joints_state messages
   def onSubPositionMsg(self, caller=None, event=None):
     position_msg = self.subPosition.GetLastMessage()
+    # Update timestamp string node
+    stamp = position_msg.GetHeader().GetStamp()
+    timestamp = self.formatTimestampToLocalTimeText(stamp.GetSec(), stamp.GetNanosec())
+    self.robotPositionTimestamp.SetText(timestamp)
+    self.robotPositionTimestamp.Modified()
+    # Update position markups node
     point =  position_msg.GetPoint()
     position = [point.GetX(), point.GetY(), point.GetZ()]
     self.robotPosition.SetNthControlPointPosition(0, position)
