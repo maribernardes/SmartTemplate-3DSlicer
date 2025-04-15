@@ -94,11 +94,33 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     jointsContainer = qt.QWidget()
     jointsContainer.setMinimumHeight(200)  # Set minimum height for the container
-
     # Robot joints
     self.jointsLayout = qt.QVBoxLayout(jointsContainer)
-
     robotFormLayout.addWidget(jointsContainer)
+
+    # Robot position
+    positionLayout = qt.QHBoxLayout()
+    positionLabel = qt.QLabel('Robot coordinates:')
+    self.positionRASTextbox = qt.QLineEdit('(---, ---, ---) RAS')
+    self.positionRASTextbox.setReadOnly(True)
+    self.positionRASTextbox.setStyleSheet('background-color: transparent; border: no border;')
+    self.positionRASTextbox.toolTip = 'Robot current position (scanner frame)'
+    self.positionRobotTextbox = qt.QLineEdit('(---, ---, ---) robot')
+    self.positionRobotTextbox.setReadOnly(True)
+    self.positionRobotTextbox.setStyleSheet('background-color: transparent; border: no border;')
+    self.positionRobotTextbox.toolTip = 'Robot current position (robot frame)'
+    positionLayout.addWidget(positionLabel)
+    positionLayout.addWidget(self.positionRASTextbox)
+    positionLayout.addWidget(self.positionRobotTextbox)
+    timestampLabel = qt.QLabel('Timestamp:')
+    self.timeStampTextbox = qt.QLineEdit('-- : -- : --.----')
+    self.timeStampTextbox.setReadOnly(True)
+    self.timeStampTextbox.setStyleSheet('background-color: transparent; border: no border;')
+    self.timeStampTextbox.toolTip = 'Timestamp from last shape measurement'
+    positionLayout.addWidget(timestampLabel)
+    positionLayout.addWidget(self.timeStampTextbox)
+    robotFormLayout.addRow(positionLayout)
+
 
     ## Planning collapsible button                 
     ####################################
@@ -127,7 +149,15 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.targetingButton.toolTip = 'Start targeting'
     self.targetingButton.enabled = False
     markupsLayout.addRow('', self.targetingButton)
+
+    ## Insertion collapsible button                
+    ####################################
     
+    insertionCollapsibleButton = ctk.ctkCollapsibleButton()
+    insertionCollapsibleButton.text = 'Insertion'    
+    self.layout.addWidget(insertionCollapsibleButton)
+    insertionFormLayout = qt.QFormLayout(insertionCollapsibleButton)
+
     self.layout.addStretch(1)
     
     ####################################
@@ -154,6 +184,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     # These connections ensure that we synch jointValues with the logic
     self.addObserver(self.logic.jointValues, vtk.vtkCommand.ModifiedEvent, self.onJointsChange)
+    self.addObserver(self.logic.robotPosition, vtk.vtkCommand.ModifiedEvent, self.onPositionChange)
 
     # These connections ensure that whenever user changes some settings on the GUI, that is saved in the MRML scene
     # (in the selected parameter node).
@@ -282,6 +313,12 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
       self.addJoints()
     # self.pointListSelector.placeActive(not pointsSelected)
 
+  def format3DPoint(self, point, frame=None, decimals=4):
+    formatted = f"({point[0]:.{decimals}f}, {point[1]:.{decimals}f}, {point[2]:.{decimals}f})"
+    if frame:
+        formatted += f" {frame}"
+    return formatted
+  
   def addJoints(self):
     (self.jointNames, self.jointLimits) = self.logic.getDefinedJoints()
     if self.jointNames is None:
@@ -343,7 +380,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
           # self.text_boxes[joint] = desired_value_box
           self.current_value_boxes[joint] = current_value_box
       print('Loaded joints in gui')
-      
+
   # Update sliders and text boxes with current joint values
   def onJointsChange(self, caller=None, event=None):
     for joint in self.jointNames:
@@ -352,7 +389,24 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
       self.jointValues[joint] = float(caller.GetAttribute(joint))
       self.sliders[joint].setValue(self.jointValues[joint])
       self.current_value_boxes[joint].setText(f"{self.jointValues[joint]:.2f}")
-   
+
+  # Update text boxes with current position values
+  def onPositionChange(self, caller=None, event=None):
+    robotPositionXYZ = [0.0, 0.0, 0.0]
+    self.logic.robotPosition.GetNthControlPointPosition(0, robotPositionXYZ)
+    #print('Time: %s / Tip (RAS): %s' %(timestamp,tipCoordinates))
+    if robotPositionXYZ is not None:
+      self.positionRobotTextbox.setText(self.format3DPoint(robotPositionXYZ, 'XYZ'))
+    else:
+      self.positionRobotTextbox.setText('(---, ---, ---)')
+    robotPositionRAS = [0.0, 0.0, 0.0]
+    self.logic.robotPosition.GetNthControlPointPositionWorld(0, robotPositionRAS)
+    if robotPositionRAS is not None:
+      self.positionRASTextbox.setText(self.format3DPoint(robotPositionRAS, 'RAS'))
+    else:
+      self.positionRASTextbox.setText('(---, ---, ---)')
+
+
   def loadRobot(self):
     print('UI: loadRobot()')
     self.logic.loadRobot()
@@ -391,23 +445,48 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.pubGoal = self.rosNode.GetPublisherNodeByTopic('/desired_position')
     self.pubEntry = self.rosNode.GetPublisherNodeByTopic('/planning/skin_entry')
     self.pubTarget = self.rosNode.GetPublisherNodeByTopic('/planning/target')
-    self.subJoints = self.rosNode.GetPublisherNodeByTopic('/joint_states')
+    self.subJoints = self.rosNode.GetSubscriberNodeByTopic('/joint_states')
+    self.subPosition = self.rosNode.GetSubscriberNodeByTopic('/stage/state/guide_pose')
+    if self.subJoints is not None:
+      self.observeJoints = self.subJoints.AddObserver('ModifiedEvent', self.onSubJointsMsg)
+    if self.subPosition is not None:
+      self.observePosition = self.subPosition.AddObserver('ModifiedEvent', self.onSubPositionMsg)  
 
     self.link_names = None
     self.joint_names = None
     self.joint_limits = None
 
-    # If robot node is available, make sure the /robot_state_publisher is up
-    if self.robotNode:
-      paramNode = self.rosNode.GetParameterNodeByNode('/robot_state_publisher')
-      if not self.extractRobotParameters(paramNode):
-        print('Robot missing /robot_state_publisher')
-
-    # Other internal variables
     self.mat_RobotToZFrame = None
     self.mat_ZFrameToScanner = None
     self.mat_RobotToScanner =  None
     self.mat_ScannerToRobot =  None
+
+    # If robot node is available, make sure the /robot_state_publisher is up
+    if self.robotNode:
+      paramNode = self.rosNode.GetParameterNodeByNode('/robot_state_publisher')
+      if self.extractRobotParameters(paramNode) is False:
+        print('Robot missing /robot_state_publisher')
+
+    # MRML Objects for robot position
+    # Robot to Scanner Transform node
+    self.robotToScannerTransformNode = slicer.util.getFirstNodeByClassByName('vtkMRMLLinearTransformNode','RobotToScannerTransform')
+    if self.robotToScannerTransformNode is None:
+        self.robotToScannerTransformNode = slicer.vtkMRMLLinearTransformNode()
+        self.robotToScannerTransformNode.SetName('RobotToScannerTransform')
+        slicer.mrmlScene.AddNode(self.robotToScannerTransformNode)
+    # Robot position message header
+    self.robotPositionHeaderNode = slicer.util.getFirstNodeByName('RobotPositionHeader', className='vtkMRMLTextNode')
+    if self.robotPositionHeaderNode is None:
+      self.robotPositionHeaderNode = slicer.vtkMRMLTextNode()
+      self.robotPositionHeaderNode.SetName('RobotPositionHeader')
+      slicer.mrmlScene.AddNode(self.robotPositionHeaderNode)
+    # Robot position markups node
+    self.robotPosition = slicer.util.getFirstNodeByName('RobotPosition', className='vtkMRMLMarkupsFiducialNode')
+    if self.robotPosition is None:
+      self.robotPosition = slicer.vtkMRMLMarkupsFiducialNode()
+      self.robotPosition.SetName('RobotPosition')
+      slicer.mrmlScene.AddNode(self.robotPosition)
+    self.initializeRobotPositionMarkup()
 
     # Create PointList node for planning
     self.pointListNode = slicer.util.getFirstNodeByName('Planning', className='vtkMRMLMarkupsFiducialNode')
@@ -425,6 +504,30 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       self.jointValues = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLScriptedModuleNode', 'JointValues')
 
   ### Logic functions ###################################################################
+
+  def initializeRobotPositionMarkup(self):
+    # Ensure there is only one control point
+    if self.robotPosition.GetNumberOfControlPoints() > 1:
+        self.robotPosition.RemoveAllControlPoints()
+    # If no control point exists, add one at (0,0,0)
+    if self.robotPosition.GetNumberOfControlPoints() == 0:
+        self.robotPosition.AddControlPoint(vtk.vtkVector3d(0, 0, 0), "")
+    # Ensure tip is labeled, locked and one-point only
+    self.robotPosition.SetNthControlPointLabel(0, "")
+    self.robotPosition.SetLocked(True)
+    self.robotPosition.SetFixedNumberOfControlPoints(True)           
+    displayNode = self.robotPosition.GetDisplayNode()
+    if displayNode:
+        displayNode.SetGlyphScale(1.5)  # 1% glyph size and color
+        displayNode.SetSelectedColor(0.667, 1.0, 0.498)
+    else:
+        # If the display node does not exist, create it and set the glyph size and color
+        self.robotPosition.CreateDefaultDisplayNodes()
+        self.robotPosition.GetDisplayNode().SetGlyphScale(1.5)
+        displayNode.SetSelectedColor(0.667, 1.0, 0.498)
+          # TODO: Set mat_RobotToScanner Transform 
+    if self.robotToScannerTransformNode:
+      self.robotPosition.SetAndObserveTransformNodeID(self.robotToScannerTransformNode.GetID())
 
   # Initialize module parameter node with default settings
   def setDefaultParameters(self, parameterNode):
@@ -455,6 +558,14 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     for joint_name, joint_value in zip(msg_joint_names, msg_joint_values):
       self.jointValues.SetAttribute(joint_name, str(1000*joint_value))  # Triggers observer
     self.jointValues.Modified()
+
+  # Callback for /joints_state messages
+  def onSubPositionMsg(self, caller=None, event=None):
+    position_msg = self.subPosition.GetLastMessage()
+    point =  position_msg.GetPoint()
+    position = [point.GetX(), point.GetY(), point.GetZ()]
+    self.robotPosition.SetNthControlPointPosition(0, position)
+    self.robotPosition.Modified()
 
   # Wait for robot models to be ready
   def onRobotModelReady(self, caller=None, event=None):
@@ -500,7 +611,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       return False
     if paramNode.IsParameterSet('robot_description'):
       robot_description = paramNode.GetParameterAsString('robot_description')
-      print(robot_description)
+      print('Reading robot description...')
       # Parse URDF
       root = ET.fromstring(robot_description)
       link_names = []
@@ -584,8 +695,12 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       if self.subJoints is None:
         self.subJoints = self.rosNode.CreateAndAddSubscriberNode('JointState', '/joint_states')
         self.observeJoints = self.subJoints.AddObserver('ModifiedEvent', self.onSubJointsMsg)
+      if self.subPosition is None:
+        self.subPosition = self.rosNode.CreateAndAddSubscriberNode('PointStamped', '/stage/state/guide_pose')
+        self.observePosition = self.subPosition.AddObserver('ModifiedEvent', self.onSubPositionMsg)  
       print('Robot initialized')
     else:
+      # Should not enter here
       print('Robot already intialized')
     return True
 
@@ -593,19 +708,22 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     if self.robotNode is None:
       print('Initialize robot first')
       return False
-    else:
-      if self.mat_RobotToScanner is None:
-        self.mat_ZFrameToScanner = vtk.vtkMatrix4x4()
-        self.mat_RobotToScanner =  vtk.vtkMatrix4x4()
-        self.mat_ScannerToRobot =  vtk.vtkMatrix4x4()
-      ZFrameToScanner.GetMatrixTransformToWorld(self.mat_ZFrameToScanner)
-      vtk.vtkMatrix4x4.Multiply4x4(self.mat_ZFrameToScanner, self.mat_RobotToZFrame, self.mat_RobotToScanner)
-      vtk.vtkMatrix4x4.Invert(self.mat_RobotToScanner, self.mat_ScannerToRobot)
-      world_msg = self.pubWorld.GetBlankMessage()
-      world_msg.SetTransform(self.mat_RobotToScanner)
-      self.pubWorld.Publish(world_msg)
-      self.printVtkMatrix4x4(self.mat_RobotToScanner, '\world_pose')
-      return True
+    if self.mat_RobotToScanner is None:
+      self.mat_RobotToScanner =  vtk.vtkMatrix4x4()
+      self.mat_ZFrameToScanner = vtk.vtkMatrix4x4()
+      self.mat_ScannerToRobot =  vtk.vtkMatrix4x4()
+    ZFrameToScanner.GetMatrixTransformToWorld(self.mat_ZFrameToScanner)
+    vtk.vtkMatrix4x4.Multiply4x4(self.mat_ZFrameToScanner, self.mat_RobotToZFrame, self.mat_RobotToScanner)
+    vtk.vtkMatrix4x4.Invert(self.mat_RobotToScanner, self.mat_ScannerToRobot)
+    # Update robotToScanner transform
+    self.robotToScannerTransformNode.SetMatrixTransformToParent(self.mat_RobotToScanner)   
+    # Publish robotToScanner to world_pose broadcaster
+    # TODO: Replace by a static broadcaster once it becomes available in SlicerROS2
+    world_msg = self.pubWorld.GetBlankMessage()
+    world_msg.SetTransform(self.mat_RobotToScanner)
+    self.pubWorld.Publish(world_msg)
+    self.printVtkMatrix4x4(self.mat_RobotToScanner, '\world_pose')
+    return True
 
   def getNumberOfPoints(self, pointListNode):
     if pointListNode is not None:
@@ -640,7 +758,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     goal_msg.SetZ(entry[2])
     self.pubGoal.Publish(goal_msg)
     print('Goal sent')
-    print("Last message sent: {}.".format(goal_msg))
+    #print("Last message sent: {}.".format(goal_msg))
     
     # Publish entry message
     entry_msg = self.pubEntry.GetBlankMessage()
@@ -648,14 +766,14 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     entry_msg.SetY(entry[1])
     entry_msg.SetZ(entry[2])
     self.pubEntry.Publish(entry_msg)
-    '''
+    
     # Publish target message
     target_msg = self.pubTarget.GetBlankMessage()
     target_msg.SetX(target[0])
     target_msg.SetY(target[1])
     target_msg.SetZ(target[2])
     self.pubTarget.Publish(target_msg)
-    '''
+    
     # Update entry scanner in markups list (to align with target)
     entry_scanner = self.mat_RobotToScanner.MultiplyPoint(entry)
     entry_scanner = entry_scanner[0:3]
