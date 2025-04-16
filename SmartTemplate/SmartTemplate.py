@@ -206,7 +206,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
     self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
 
-    # These connections ensure that we synch jointValues with the logic
+    # These connections ensure that we synch robot info with the logic
     self.addObserver(self.logic.jointValues, vtk.vtkCommand.ModifiedEvent, self.onJointsChange)
     self.addObserver(self.logic.robotPosition, vtk.vtkCommand.ModifiedEvent, self.onPositionChange)
 
@@ -261,14 +261,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
   def initializeParameterNode(self):
     # Load default parameters in logic module
     self.setParameterNode(self.logic.getParameterNode())
-    # NOT DOING THIS: sometimes it changes the selection when going back between modules
-    # # Select default input nodes if nothing is selected yet to save a few clicks for the user
-    # if not self._parameterNode.GetNodeReference('ZTransform'):
-    #   # Find first selectable transform
-    #   zTransformNode = next((node for node in slicer.util.getNodesByClass('vtkMRMLLinearTransformNode') if node.GetSelectable()==1), None)
-    #   if zTransformNode:
-    #     self._parameterNode.SetNodeReferenceID('ZTransform', zTransformNode.GetID())
-            
+
   # Set and observe parameter node.
   # Observation is needed because when the parameter node is changed then the GUI must be updated immediately.
   def setParameterNode(self, inputParameterNode):
@@ -331,7 +324,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Update buttons accordingly
     self.loadButton.enabled = not self.isRobotLoaded
     self.registerButton.enabled = zFrameSelected and self.isRobotLoaded
-    self.adjustEntryButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
+    self.adjustEntryButton.enabled = pointsSelected and robotRegistered #and self.isRobotLoaded
     
     # Add joints if not already added:
     if self.jointNames is None and self.isRobotLoaded:
@@ -402,6 +395,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
   # Update sliders and text boxes with current joint values
   def onJointsChange(self, caller=None, event=None):
+    if self.jointNames is None:
+      return
     for joint in self.jointNames:
       if caller.GetAttribute(joint) is None:
         return
@@ -647,66 +642,66 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
 
   # Get info from robot_description
   def extractRobotParameters(self, paramNode):
-    if paramNode is None:
-      print('Parameter node is not available')
+    if paramNode is None or not paramNode.IsParameterSet('robot_description'):
+      print('Parameter node or robot description not available')
       return False
-    if paramNode.IsParameterSet('robot_description'):
-      robot_description = paramNode.GetParameterAsString('robot_description')
-      print('Reading robot description...')
-      # Parse URDF
+    robot_description = paramNode.GetParameterAsString('robot_description')
+    print('Reading robot description...')
+    try:
       root = ET.fromstring(robot_description)
-      link_names = []
-      joint_names = []
-      joint_limits = {}
-      for link in root.findall('link'):
-          link_name = link.get('name')
-          link_names.append(link_name)
-      for joint in root.findall('joint'):
-          joint_name = joint.get('name')
-          limit = joint.find('limit')
-          if limit is not None:
-              lower = 1000*float(limit.get('lower', '0.0'))
-              upper = 1000*float(limit.get('upper', '0.0'))
-              joint_names.append(joint_name)
-              joint_limits[joint_name] = {'min': lower, 'max': upper}
-      # Extract zframe_pose
-      custom_parameters = root.find('custom_parameters')
-      if custom_parameters is not None:
-        zframe_pose_element = custom_parameters.find('zframe_pose')
-        if zframe_pose_element is not None:
-          zframe_pose = zframe_pose_element.get('value').strip()
-          # print('ZFrameToRobot (Homogeneous Matrix):', zframe_pose)
-          # Convert to a 4x4 matrix
-          rows = zframe_pose.split('       ')  # Split by rows
-          matrix_values = [list(map(float, row.split())) for row in rows]
-          # Scale the translation elements by 1000
-          matrix_values[0][3] *= 1000  # x translation
-          matrix_values[1][3] *= 1000  # y translation
-          matrix_values[2][3] *= 1000  # z translation          
-          # Create vtkMatrix4x4 and populate it
-          mat_ZFrameToRobot = vtk.vtkMatrix4x4()
-          self.mat_RobotToZFrame = vtk.vtkMatrix4x4()
-          for i in range(4):
-            for j in range(4):
-              mat_ZFrameToRobot.SetElement(i, j, matrix_values[i][j])
-          self.mat_RobotToZFrame.DeepCopy(mat_ZFrameToRobot )
-          self.mat_RobotToZFrame.Invert()
-          self.printVtkMatrix4x4(mat_ZFrameToRobot, 'ZFrameToRobot = ')
-        else:
-          print('zframe_pose not found in custom_parameters.')
-      else:
-        print('custom_parameters section not found.')
-      # Store extracted data in the class attributes
-      self.link_names = link_names
-      self.joint_names = joint_names
-      self.joint_limits = joint_limits
-      print('Robot links = %s' %self.link_names)
-      print('Robot joints = %s' %self.joint_names)
-      return True
-    else:
-      print('Robot description not available')
+    except ET.ParseError as e:
+      print(f"[ERROR] URDF parsing failed: {e}")
       return False
-
+    # Extract link names
+    self.link_names = [link.get('name') for link in root.findall('link')]
+    # Extract joint info with channel and limits
+    joint_info = []
+    for joint in root.findall('joint'):
+      joint_name = joint.get('name')
+      limit = joint.find('limit')
+      channel_tag = joint.find('channel')
+      if limit is None or channel_tag is None:
+        continue  # Skip joints without necessary info
+      try:
+        channel = channel_tag.text.strip()
+        lower = 1000 * float(limit.get('lower', '0.0'))
+        upper = 1000 * float(limit.get('upper', '0.0'))
+        joint_info.append((channel, joint_name, {'min': lower, 'max': upper}))
+      except Exception as e:
+        print(f"[WARNING] Skipping joint '{joint_name}' due to parsing error: {e}")
+    if not joint_info:
+      print("[ERROR] No valid joints with channel and limits found.")
+      return False
+    # Sort joints by channel
+    joint_info.sort(key=lambda item: item[0])
+    self.joint_names = [j[1] for j in joint_info]
+    self.joint_limits = {j[1]: j[2] for j in joint_info}
+    print(f"Robot links: {self.link_names}")
+    print(f"Robot joints (sorted by channel): {self.joint_names}")
+    # Extract ZFrame transform if available
+    zframe_pose_element = root.find('./custom_parameters/zframe_pose')
+    if zframe_pose_element is None:
+      print('[ERROR] zframe_pose not found in custom_parameters.')
+      return False
+    try:
+      zframe_pose = zframe_pose_element.get('value').strip()
+      rows = zframe_pose.split('       ')  # split into rows
+      matrix_values = [list(map(float, row.split())) for row in rows]
+      for i in range(3):
+        matrix_values[i][3] *= 1000  # scale translations
+      mat_ZFrameToRobot = vtk.vtkMatrix4x4()
+      for i in range(4):
+        for j in range(4):
+          mat_ZFrameToRobot.SetElement(i, j, matrix_values[i][j])
+      self.mat_RobotToZFrame = vtk.vtkMatrix4x4()
+      self.mat_RobotToZFrame.DeepCopy(mat_ZFrameToRobot)
+      self.mat_RobotToZFrame.Invert()
+      self.printVtkMatrix4x4(mat_ZFrameToRobot, 'ZFrameToRobot = ')
+      return True
+    except Exception as e:
+      print(f"[ERROR] Failed to parse zframe_pose: {e}")
+      return False
+    
   def getJointValues(self):
     if self.joints is None:
       return None
