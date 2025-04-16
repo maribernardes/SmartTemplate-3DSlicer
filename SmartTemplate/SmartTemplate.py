@@ -146,18 +146,41 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     markupsLayout.addRow('Planned points:', self.pointListSelector)
     
     # SendPlan button 
-    self.targetingButton = qt.QPushButton('Start targeting')
-    self.targetingButton.toolTip = 'Start targeting'
-    self.targetingButton.enabled = False
-    markupsLayout.addRow('', self.targetingButton)
+    self.adjustEntryButton = qt.QPushButton('Align ENTRY to TARGET')
+    self.adjustEntryButton.toolTip = 'Start targeting'
+    self.adjustEntryButton.enabled = False
+    markupsLayout.addRow('', self.adjustEntryButton)
 
-    ## Insertion collapsible button                
+## Insertion collapsible button                
     ####################################
     
     insertionCollapsibleButton = ctk.ctkCollapsibleButton()
     insertionCollapsibleButton.text = 'Insertion'    
     self.layout.addWidget(insertionCollapsibleButton)
     insertionFormLayout = qt.QFormLayout(insertionCollapsibleButton)
+
+    commandButtonsLayout = qt.QHBoxLayout()
+    self.homeButton = qt.QPushButton('HOME')
+    self.homeButton.toolTip = 'Go to robot HOME position'
+    self.homeButton.enabled = False
+    commandButtonsLayout.addWidget(self.homeButton)
+
+    self.retractButton = qt.QPushButton('RETRACT')
+    self.retractButton.toolTip = 'Fully retract needle'
+    self.retractButton.enabled = False
+    commandButtonsLayout.addWidget(self.retractButton)
+    
+    self.alignButton = qt.QPushButton('ALIGN')
+    self.alignButton.toolTip = 'Align robot to TARGET'
+    self.alignButton.enabled = False
+    commandButtonsLayout.addWidget(self.alignButton)
+
+    self.approachButton = qt.QPushButton('APPROACH')
+    self.approachButton.toolTip = 'Plate robot at ENTRY point'
+    self.approachButton.enabled = True
+    commandButtonsLayout.addWidget(self.approachButton)
+
+    insertionFormLayout.addRow(commandButtonsLayout)
 
     self.layout.addStretch(1)
     
@@ -194,7 +217,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Connect Qt widgets to event calls
     self.loadButton.connect('clicked(bool)', self.loadRobot)
     self.registerButton.connect('clicked(bool)', self.registerRobot)
-    self.targetingButton.connect('clicked(bool)', self.startTargeting)
+    self.adjustEntryButton.connect('clicked(bool)', self.adjustEntry)
+    self.approachButton.connect('clicked(bool)', self.approachEntry)
     self.pointListSelector.connect('updateFinished()', self.onPointListChanged)
 
     # Initialize widget variables and updateGUI
@@ -307,7 +331,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Update buttons accordingly
     self.loadButton.enabled = not self.isRobotLoaded
     self.registerButton.enabled = zFrameSelected and self.isRobotLoaded
-    self.targetingButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
+    self.adjustEntryButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
     
     # Add joints if not already added:
     if self.jointNames is None and self.isRobotLoaded:
@@ -413,11 +437,18 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.logic.registerRobot(zTransformNode)
     self.updateGUI()
 
-  def startTargeting(self):
-    print('UI: startTargeting()')
+  def adjustEntry(self):
+    print('UI: adjustEntry()')
     # Get current transform node
     pointListNode = self.pointListSelector.currentNode()
-    self.logic.sendPlannedPoints(pointListNode)
+    self.logic.alignEntryToTarget(pointListNode)
+    self.updateGUI()
+
+  def approachEntry(self):
+    print('UI: approachEntry()')
+    # Get current transform node
+    pointListNode = self.pointListSelector.currentNode()
+    self.logic.approachEntry(pointListNode)
     self.updateGUI()
 
    
@@ -450,6 +481,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.link_names = None
     self.joint_names = None
     self.joint_limits = None
+    self.desired_position = None
 
     self.mat_RobotToZFrame = None
     self.mat_ZFrameToScanner = None
@@ -750,8 +782,30 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       if pointListNode.GetNumberOfDefinedControlPoints()>=2:
         pointListNode.SetFixedNumberOfControlPoints(2)
     
-  # Send planned points with \planning\entry and \planning\target messages
-  def sendPlannedPoints(self, pointListNode):
+  # Place robot at the skin entry point
+  def approachEntry(self, pointListNode):
+    # Get entry point in scanner coordinates
+    entry_scanner = [*pointListNode.GetNthControlPointPosition(pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
+    # Calculate entry point in robot coordinates
+    entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)
+    self.sendDesiredPosition(entry)
+    return True
+
+  def isEntryAligned(self, pointListNode):
+    # Get Points in scanner coordinates
+    entry_scanner = [*pointListNode.GetNthControlPointPosition(pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
+    target_scanner = [*pointListNode.GetNthControlPointPosition(pointListNode.GetControlPointIndexByLabel('TARGET')), 1.0]
+    # Calculate Points in robot coordinates
+    target = self.mat_ScannerToRobot.MultiplyPoint(target_scanner)
+    entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)
+    # Align entry with target (in robot coordinates)
+    aligned_entry = [target[0], entry[1], target[2], 1.0]
+    if entry == aligned_entry:
+      return True
+    else:
+      return False
+    
+  def alignEntryToTarget(self, pointListNode):
     # Get Points in scanner coordinates
     entry_scanner = [*pointListNode.GetNthControlPointPosition(pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
     target_scanner = [*pointListNode.GetNthControlPointPosition(pointListNode.GetControlPointIndexByLabel('TARGET')), 1.0]
@@ -760,31 +814,34 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)
     # Align entry with target (in robot coordinates)
     entry = [target[0], entry[1], target[2], 1.0]
-    # Publish entry message
-    goal_msg = self.pubGoal.GetBlankMessage()
-    goal_msg.SetX(entry[0])
-    goal_msg.SetY(entry[1])
-    goal_msg.SetZ(entry[2])
-    self.pubGoal.Publish(goal_msg)
-    print('Goal sent')
-    #print("Last message sent: {}.".format(goal_msg))
-    
+    # Update entry scanner in markups list (to align with target)
+    entry_scanner = self.mat_RobotToScanner.MultiplyPoint(entry)
+    entry_scanner = entry_scanner[0:3]
+    pointListNode.SetNthControlPointPosition(pointListNode.GetControlPointIndexByLabel('ENTRY'), entry_scanner)
+    return True
+
+  def sendPlanning(self, entry, target):
     # Publish entry message
     entry_msg = self.pubEntry.GetBlankMessage()
     entry_msg.SetX(entry[0])
     entry_msg.SetY(entry[1])
     entry_msg.SetZ(entry[2])
     self.pubEntry.Publish(entry_msg)
-    
+    print('Sent entry point: %s' %(entry))
     # Publish target message
     target_msg = self.pubTarget.GetBlankMessage()
     target_msg.SetX(target[0])
     target_msg.SetY(target[1])
     target_msg.SetZ(target[2])
     self.pubTarget.Publish(target_msg)
-    
-    # Update entry scanner in markups list (to align with target)
-    entry_scanner = self.mat_RobotToScanner.MultiplyPoint(entry)
-    entry_scanner = entry_scanner[0:3]
-    pointListNode.SetNthControlPointPosition(pointListNode.GetControlPointIndexByLabel('ENTRY'), entry_scanner)
-    return True
+    print('Sent target: %s' %(target))
+
+  def sendDesiredPosition(self, goal):
+    # Publish entry message
+    self.desired_position = goal
+    goal_msg = self.pubGoal.GetBlankMessage()
+    goal_msg.SetX(self.desired_position[0])
+    goal_msg.SetY(self.desired_position[1])
+    goal_msg.SetZ(self.desired_position[2])
+    self.pubGoal.Publish(goal_msg)
+    print(self.desired_position)
