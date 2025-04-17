@@ -65,6 +65,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     # Load robot button
     robotFormLayout = qt.QFormLayout(robotCollapsibleButton)
+    robotFormLayout.addRow('', qt.QLabel(''))  # Vertical space
     self.loadButton = qt.QPushButton('Load SmartTemplate')
     self.loadButton.toolTip = 'Loads robot in 3DSlicer'
     self.loadButton.enabled = True
@@ -101,12 +102,15 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     # Robot position
     positionLayout = qt.QHBoxLayout()
-    positionLabel = qt.QLabel('Robot coordinates:')
+    positionLabel = qt.QLabel('Position:')
+    positionLabel.setFixedWidth(50)
     self.positionRASTextbox = qt.QLineEdit('(---, ---, ---) RAS')
+    self.positionRASTextbox.setFixedWidth(180)
     self.positionRASTextbox.setReadOnly(True)
     self.positionRASTextbox.setStyleSheet('background-color: transparent; border: no border;')
     self.positionRASTextbox.toolTip = 'Robot current position (scanner frame)'
-    self.positionRobotTextbox = qt.QLineEdit('(---, ---, ---) robot')
+    self.positionRobotTextbox = qt.QLineEdit('(---, ---, ---) XYZ')
+    self.positionRobotTextbox.setFixedWidth(180)
     self.positionRobotTextbox.setReadOnly(True)
     self.positionRobotTextbox.setStyleSheet('background-color: transparent; border: no border;')
     self.positionRobotTextbox.toolTip = 'Robot current position (robot frame)'
@@ -114,7 +118,9 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     positionLayout.addWidget(self.positionRASTextbox)
     positionLayout.addWidget(self.positionRobotTextbox)
     timestampLabel = qt.QLabel('Timestamp:')
+    timestampLabel.setFixedWidth(70)
     self.timeStampTextbox = qt.QLineEdit('-- : -- : --.----')
+    self.timeStampTextbox.setFixedWidth(120)
     self.timeStampTextbox.setReadOnly(True)
     self.timeStampTextbox.setStyleSheet('background-color: transparent; border: no border;')
     self.timeStampTextbox.toolTip = 'Timestamp from last shape measurement'
@@ -145,19 +151,12 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # self.pointListSelector.markupsPlaceWidget().setPlaceModePersistency(True)
     markupsLayout.addRow('Planned points:', self.pointListSelector)
     
-    # SendPlan button 
+    # Adjust Entry button 
     self.adjustEntryButton = qt.QPushButton('Adjust ENTRY to TARGET')
     self.adjustEntryButton.toolTip = 'Adjust ENTRY to have it aligned to TARGET'
     self.adjustEntryButton.enabled = False
     markupsLayout.addRow('', self.adjustEntryButton)
-
-## Insertion collapsible button                
-    ####################################
-    
-    insertionCollapsibleButton = ctk.ctkCollapsibleButton()
-    insertionCollapsibleButton.text = 'Insertion'    
-    self.layout.addWidget(insertionCollapsibleButton)
-    insertionFormLayout = qt.QFormLayout(insertionCollapsibleButton)
+    markupsLayout.addRow('', qt.QLabel(''))  # Vertical space
 
     commandButtonsLayout = qt.QHBoxLayout()
     self.homeButton = qt.QPushButton('HOME')
@@ -179,7 +178,35 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.approachButton.toolTip = 'Approach robot to skin'
     self.approachButton.enabled = False
     commandButtonsLayout.addWidget(self.approachButton)
-    insertionFormLayout.addRow(commandButtonsLayout)
+    markupsLayout.addRow(commandButtonsLayout)
+
+## Insertion collapsible button                
+    ####################################
+    
+    insertionCollapsibleButton = ctk.ctkCollapsibleButton()
+    insertionCollapsibleButton.text = 'Insertion'    
+    self.layout.addWidget(insertionCollapsibleButton)
+    insertionFormLayout = qt.QFormLayout(insertionCollapsibleButton)
+
+
+    insertionFormLayout.addRow('', qt.QLabel(''))  # Vertical space
+    insertionButtonsLayout = qt.QHBoxLayout()
+    self.toTargetButton= qt.QPushButton('Insert to target')
+    self.toTargetButton.toolTip = 'Insert the needle to target'
+    self.toTargetButton.enabled = False
+    insertionButtonsLayout.addWidget(self.toTargetButton)
+
+    self.stepButton= qt.QPushButton('Insert length')
+    self.stepButton.toolTip = 'Insert the needle stepwise a certain lenght'
+    self.stepButton.enabled = True
+    insertionButtonsLayout.addWidget(self.stepButton)
+
+    self.stepSizeTextbox = qt.QLineEdit('20.0')
+    self.stepSizeTextbox.setReadOnly(False)
+    self.stepSizeTextbox.setMaximumWidth(50)
+    insertionButtonsLayout.addWidget(self.stepSizeTextbox)
+    insertionButtonsLayout.addWidget(qt.QLabel('mm'))
+    insertionFormLayout.addRow(insertionButtonsLayout)
 
     self.layout.addStretch(1)
     
@@ -207,7 +234,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     # These connections ensure that we synch robot info with the logic
     self.addObserver(self.logic.jointValues, vtk.vtkCommand.ModifiedEvent, self.onJointsChange)
-    self.addObserver(self.logic.robotPosition, vtk.vtkCommand.ModifiedEvent, self.onPositionChange)
+    self.addObserver(self.logic.robotPositionMarkupsNode, vtk.vtkCommand.ModifiedEvent, self.onPositionChange)
 
     # These connections ensure that whenever user changes some settings on the GUI, that is saved in the MRML scene
     # (in the selected parameter node).
@@ -221,6 +248,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.homeButton.connect('clicked(bool)', self.homeRobot)
     self.alignButton.connect('clicked(bool)', self.alignForInsertion)
     self.approachButton.connect('clicked(bool)', self.approachSkin)
+    self.toTargetButton.connect('clicked(bool)', self.toTarget)
+    self.stepButton.connect('clicked(bool)', self.insertStep)
     self.pointListSelector.connect('updateFinished()', self.onPointListChanged)
 
     # Initialize widget variables and updateGUI
@@ -416,20 +445,18 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
   # Update text boxes with current position values
   def onPositionChange(self, caller=None, event=None):
-    robotPositionXYZ = [0.0, 0.0, 0.0]
-    self.logic.robotPosition.GetNthControlPointPosition(0, robotPositionXYZ)
+    robotPositionXYZ = self.logic.getRobotPosition()
     #print('Time: %s / Tip (RAS): %s' %(timestamp,tipCoordinates))
     if robotPositionXYZ is not None:
       self.positionRobotTextbox.setText(self.format3DPoint(robotPositionXYZ, 'XYZ'))
     else:
       self.positionRobotTextbox.setText('(---, ---, ---)')
-    robotPositionRAS = [0.0, 0.0, 0.0]
-    self.logic.robotPosition.GetNthControlPointPositionWorld(0, robotPositionRAS)
+    robotPositionRAS = self.logic.getRobotPosition('world')
     if robotPositionRAS is not None:
       self.positionRASTextbox.setText(self.format3DPoint(robotPositionRAS, 'RAS'))
     else:
       self.positionRASTextbox.setText('(---, ---, ---)')
-    self.timeStampTextbox.setText(self.logic.robotPositionTimestamp.GetText())
+    self.timeStampTextbox.setText(self.logic.getTimestamp())
     self.updateGUI()
 
   def loadRobot(self):
@@ -470,7 +497,14 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.logic.approachSkin()
     self.updateGUI()
 
-   
+  def toTarget(self):
+    print('UI: toTarget()')
+    self.updateGUI()
+
+  def insertStep(self):
+    print('UI: insertStep()')
+    self.logic.insertStep(float(self.stepSizeTextbox.text.strip()))
+    self.updateGUI()    
 ################################################################################################################################################
 # Logic Class
 ################################################################################################################################################
@@ -529,11 +563,11 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       self.robotPositionTimestamp.SetName('RobotPositionTimestamp')
       slicer.mrmlScene.AddNode(self.robotPositionTimestamp)
     # Robot position markups node
-    self.robotPosition = slicer.util.getFirstNodeByName('RobotPosition', className='vtkMRMLMarkupsFiducialNode')
-    if self.robotPosition is None:
-      self.robotPosition = slicer.vtkMRMLMarkupsFiducialNode()
-      self.robotPosition.SetName('RobotPosition')
-      slicer.mrmlScene.AddNode(self.robotPosition)
+    self.robotPositionMarkupsNode= slicer.util.getFirstNodeByName('RobotPosition', className='vtkMRMLMarkupsFiducialNode')
+    if self.robotPositionMarkupsNode is None:
+      self.robotPositionMarkupsNode = slicer.vtkMRMLMarkupsFiducialNode()
+      self.robotPositionMarkupsNode.SetName('RobotPosition')
+      slicer.mrmlScene.AddNode(self.robotPositionMarkupsNode)
     self.initializeRobotPositionMarkup()
 
     # Create PointList node for planning
@@ -555,27 +589,27 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
 
   def initializeRobotPositionMarkup(self):
     # Ensure there is only one control point
-    if self.robotPosition.GetNumberOfControlPoints() > 1:
-        self.robotPosition.RemoveAllControlPoints()
+    if self.robotPositionMarkupsNode.GetNumberOfControlPoints() > 1:
+        self.robotPositionMarkupsNode.RemoveAllControlPoints()
     # If no control point exists, add one at (0,0,0)
-    if self.robotPosition.GetNumberOfControlPoints() == 0:
-        self.robotPosition.AddControlPoint(vtk.vtkVector3d(0, 0, 0), "")
+    if self.robotPositionMarkupsNode.GetNumberOfControlPoints() == 0:
+        self.robotPositionMarkupsNode.AddControlPoint(vtk.vtkVector3d(0, 0, 0), "")
     # Ensure tip is labeled, locked and one-point only
-    self.robotPosition.SetNthControlPointLabel(0, "")
-    self.robotPosition.SetLocked(True)
-    self.robotPosition.SetFixedNumberOfControlPoints(True)           
-    displayNode = self.robotPosition.GetDisplayNode()
+    self.robotPositionMarkupsNode.SetNthControlPointLabel(0, "")
+    self.robotPositionMarkupsNode.SetLocked(True)
+    self.robotPositionMarkupsNode.SetFixedNumberOfControlPoints(True)           
+    displayNode = self.robotPositionMarkupsNode.GetDisplayNode()
     if displayNode:
         displayNode.SetGlyphScale(1.5)  # 1% glyph size and color
         displayNode.SetSelectedColor(0.667, 1.0, 0.498)
     else:
         # If the display node does not exist, create it and set the glyph size and color
-        self.robotPosition.CreateDefaultDisplayNodes()
-        self.robotPosition.GetDisplayNode().SetGlyphScale(1.5)
+        self.robotPositionMarkupsNode.CreateDefaultDisplayNodes()
+        self.robotPositionMarkupsNode.GetDisplayNode().SetGlyphScale(1.5)
         displayNode.SetSelectedColor(0.667, 1.0, 0.498)
           # TODO: Set mat_RobotToScanner Transform 
     if self.robotToScannerTransformNode:
-      self.robotPosition.SetAndObserveTransformNodeID(self.robotToScannerTransformNode.GetID())
+      self.robotPositionMarkupsNode.SetAndObserveTransformNodeID(self.robotToScannerTransformNode.GetID())
 
   # Initialize module parameter node with default settings
   def setDefaultParameters(self, parameterNode):
@@ -626,8 +660,8 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     # Update position markups node
     point =  position_msg.GetPoint()
     position = [point.GetX(), point.GetY(), point.GetZ()]
-    self.robotPosition.SetNthControlPointPosition(0, position)
-    self.robotPosition.Modified()
+    self.robotPositionMarkupsNode.SetNthControlPointPosition(0, position)
+    self.robotPositionMarkupsNode.Modified()
 
   # Wait for robot models to be ready
   def onRobotModelReady(self, caller=None, event=None):
@@ -788,6 +822,15 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.pubWorld.Publish(world_msg)
     self.printVtkMatrix4x4(self.mat_RobotToScanner, '\world_pose')
     return True
+  
+  def getRobotPosition(self, frame=None):
+    if frame == 'world':
+      return self.robotPositionMarkupsNode.GetNthControlPointPositionWorld(0)
+    else:
+      return self.robotPositionMarkupsNode.GetNthControlPointPosition(0)
+
+  def getTimestamp(self):
+    return self.robotPositionTimestamp.GetText()
 
   def getNumberOfPoints(self):
     if self.pointListNode is not None:
@@ -825,7 +868,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
   def isRobotAligned(self):
     entry_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
     entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)
-    robot = [*self.robotPosition.GetNthControlPointPosition(0), 1.0] # To get in scanner coordinates, use world position
+    robot = [*self.robotPositionMarkupsNode.GetNthControlPointPosition(0), 1.0]
     if abs(robot[0] - entry[0]) < self.eps and abs(robot[2] - entry[2]) < self.eps:
       return True
     else:
@@ -844,6 +887,13 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       return True
     else:
       return False
+
+  # Place robot at the skin entry point
+  def insertStep(self, stepSize):
+    goal = list(self.getRobotPosition())
+    goal[1] += stepSize
+    self.sendDesiredPosition(goal)
+    return True
     
   def adjustEntry(self):
     # Get Points in scanner coordinates
