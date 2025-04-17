@@ -146,8 +146,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     markupsLayout.addRow('Planned points:', self.pointListSelector)
     
     # SendPlan button 
-    self.adjustEntryButton = qt.QPushButton('Align ENTRY to TARGET')
-    self.adjustEntryButton.toolTip = 'Start targeting'
+    self.adjustEntryButton = qt.QPushButton('Adjust ENTRY to TARGET')
+    self.adjustEntryButton.toolTip = 'Adjust ENTRY to have it aligned to TARGET'
     self.adjustEntryButton.enabled = False
     markupsLayout.addRow('', self.adjustEntryButton)
 
@@ -171,15 +171,14 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     commandButtonsLayout.addWidget(self.retractButton)
     
     self.alignButton = qt.QPushButton('ALIGN')
-    self.alignButton.toolTip = 'Align robot to TARGET'
+    self.alignButton.toolTip = 'Align robot for insertion'
     self.alignButton.enabled = False
     commandButtonsLayout.addWidget(self.alignButton)
 
     self.approachButton = qt.QPushButton('APPROACH')
-    self.approachButton.toolTip = 'Plate robot at ENTRY point'
-    self.approachButton.enabled = True
+    self.approachButton.toolTip = 'Approach robot to skin'
+    self.approachButton.enabled = False
     commandButtonsLayout.addWidget(self.approachButton)
-
     insertionFormLayout.addRow(commandButtonsLayout)
 
     self.layout.addStretch(1)
@@ -218,7 +217,10 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.loadButton.connect('clicked(bool)', self.loadRobot)
     self.registerButton.connect('clicked(bool)', self.registerRobot)
     self.adjustEntryButton.connect('clicked(bool)', self.adjustEntry)
-    self.approachButton.connect('clicked(bool)', self.approachEntry)
+    self.retractButton.connect('clicked(bool)', self.retractNeedle)
+    self.homeButton.connect('clicked(bool)', self.homeRobot)
+    self.alignButton.connect('clicked(bool)', self.alignForInsertion)
+    self.approachButton.connect('clicked(bool)', self.approachSkin)
     self.pointListSelector.connect('updateFinished()', self.onPointListChanged)
 
     # Initialize widget variables and updateGUI
@@ -307,7 +309,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     
   # Called when the Point List is updated
   def onPointListChanged(self):    
-    self.logic.addPlanningPoint(self.pointListSelector.currentNode())
+    self.logic.addPlanningPoint()
     self.updateGUI()
   
   # Update the connection statusLabel  
@@ -317,14 +319,22 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
   # Update GUI buttons, markupWidget and connection statusLabel
   def updateGUI(self):
     # Check status
-    zFrameSelected = (self.zTransformSelector.currentNode() is not None)
-    pointsSelected = (self.logic.getNumberOfPoints(self.pointListSelector.currentNode()) == 2)
     robotRegistered = False if self.logic.mat_RobotToScanner is None else True
+    zFrameSelected = (self.zTransformSelector.currentNode() is not None)
+    pointsSelected = (self.logic.getNumberOfPoints() == 2)
+    if (pointsSelected and zFrameSelected and robotRegistered):
+      robotAligned = self.logic.isRobotAligned()
+    else:
+      robotAligned = False
 
     # Update buttons accordingly
     self.loadButton.enabled = not self.isRobotLoaded
     self.registerButton.enabled = zFrameSelected and self.isRobotLoaded
-    self.adjustEntryButton.enabled = pointsSelected and robotRegistered #and self.isRobotLoaded
+    self.adjustEntryButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
+    self.homeButton.enabled = self.isRobotLoaded
+    self.retractButton.enabled = self.isRobotLoaded
+    self.alignButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
+    self.approachButton.enabled = robotAligned and pointsSelected and robotRegistered and self.isRobotLoaded
     
     # Add joints if not already added:
     if self.jointNames is None and self.isRobotLoaded:
@@ -420,6 +430,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     else:
       self.positionRASTextbox.setText('(---, ---, ---)')
     self.timeStampTextbox.setText(self.logic.robotPositionTimestamp.GetText())
+    self.updateGUI()
 
   def loadRobot(self):
     print('UI: loadRobot()')
@@ -436,14 +447,27 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     print('UI: adjustEntry()')
     # Get current transform node
     pointListNode = self.pointListSelector.currentNode()
-    self.logic.alignEntryToTarget(pointListNode)
+    self.logic.adjustEntry()
     self.updateGUI()
 
-  def approachEntry(self):
-    print('UI: approachEntry()')
-    # Get current transform node
-    pointListNode = self.pointListSelector.currentNode()
-    self.logic.approachEntry(pointListNode)
+  def retractNeedle(self):
+    print('UI: retractNeedle()')
+    self.logic.sendDesiredCommand('RETRACT')
+    self.updateGUI()
+
+  def homeRobot(self):
+    print('UI: homeRobot()')
+    self.logic.sendDesiredCommand('HOME')
+    self.updateGUI()
+
+  def alignForInsertion(self):
+    print('UI: alignForInsertion()')
+    self.logic.alignForInsertion()
+    self.updateGUI()
+
+  def approachSkin(self):
+    print('UI: approachSkin()')
+    self.logic.approachSkin()
     self.updateGUI()
 
    
@@ -464,6 +488,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.robotNode = self.rosNode.GetRobotNodeByName('smart_template')
     self.pubWorld = self.rosNode.GetPublisherNodeByTopic('/world_pose')
     self.pubGoal = self.rosNode.GetPublisherNodeByTopic('/desired_position')
+    self.pubCommand = self.rosNode.GetPublisherNodeByTopic('/desired_command')
     self.pubEntry = self.rosNode.GetPublisherNodeByTopic('/planning/skin_entry')
     self.pubTarget = self.rosNode.GetPublisherNodeByTopic('/planning/target')
     self.subJoints = self.rosNode.GetSubscriberNodeByTopic('/joint_states')
@@ -482,6 +507,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.mat_ZFrameToScanner = None
     self.mat_RobotToScanner =  None
     self.mat_ScannerToRobot =  None
+    self.eps = 0.45
 
     # If robot node is available, make sure the /robot_state_publisher is up
     if self.robotNode:
@@ -724,6 +750,8 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
           self.pubWorld = self.rosNode.CreateAndAddPublisherNode('TransformStamped', '/world_pose')
       if self.pubGoal is None:
         self.pubGoal = self.rosNode.CreateAndAddPublisherNode('Point', '/desired_position')
+      if self.pubCommand is None:
+        self.pubCommand = self.rosNode.CreateAndAddPublisherNode('String', '/desired_command')
       if self.pubEntry is None:
         self.pubEntry = self.rosNode.CreateAndAddPublisherNode('Point', '/planning/skin_entry')
       if self.pubTarget is None:
@@ -761,35 +789,52 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.printVtkMatrix4x4(self.mat_RobotToScanner, '\world_pose')
     return True
 
-  def getNumberOfPoints(self, pointListNode):
-    if pointListNode is not None:
-      return pointListNode.GetNumberOfDefinedControlPoints()
+  def getNumberOfPoints(self):
+    if self.pointListNode is not None:
+      return self.pointListNode.GetNumberOfDefinedControlPoints()
     else: 
       return 0
   
-  def addPlanningPoint(self, pointListNode):
-    if pointListNode is not None:
-      N = pointListNode.GetNumberOfControlPoints()
+  def addPlanningPoint(self):
+    if self.pointListNode is not None:
+      N = self.pointListNode.GetNumberOfControlPoints()
       if N>=1:
-        pointListNode.SetNthControlPointLabel(0, 'TARGET')
+        self.pointListNode.SetNthControlPointLabel(0, 'TARGET')
       if N>=2:
-        pointListNode.SetNthControlPointLabel(1, 'ENTRY')
-      if pointListNode.GetNumberOfDefinedControlPoints()>=2:
-        pointListNode.SetFixedNumberOfControlPoints(2)
+        self.pointListNode.SetNthControlPointLabel(1, 'ENTRY')
+      if self.pointListNode.GetNumberOfDefinedControlPoints()>=2:
+        self.pointListNode.SetFixedNumberOfControlPoints(2)
+
+  # Place robot at the skin entry point
+  def alignForInsertion(self):
+    entry_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0] # Get entry point in scanner coordinates
+    entry = list(self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)) # Calculate entry point in robot coordinates
+    entry[1] = 0.0
+    self.sendDesiredPosition(entry[:3])
+    return True
     
   # Place robot at the skin entry point
-  def approachEntry(self, pointListNode):
+  def approachSkin(self):
     # Get entry point in scanner coordinates
-    entry_scanner = [*pointListNode.GetNthControlPointPosition(pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
+    entry_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
     # Calculate entry point in robot coordinates
     entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)
-    self.sendDesiredPosition(entry)
+    self.sendDesiredPosition(entry[:3])
     return True
 
-  def isEntryAligned(self, pointListNode):
+  def isRobotAligned(self):
+    entry_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
+    entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)
+    robot = [*self.robotPosition.GetNthControlPointPosition(0), 1.0] # To get in scanner coordinates, use world position
+    if abs(robot[0] - entry[0]) < self.eps and abs(robot[2] - entry[2]) < self.eps:
+      return True
+    else:
+      return False
+
+  def isEntryAligned(self):
     # Get Points in scanner coordinates
-    entry_scanner = [*pointListNode.GetNthControlPointPosition(pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
-    target_scanner = [*pointListNode.GetNthControlPointPosition(pointListNode.GetControlPointIndexByLabel('TARGET')), 1.0]
+    entry_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
+    target_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('TARGET')), 1.0]
     # Calculate Points in robot coordinates
     target = self.mat_ScannerToRobot.MultiplyPoint(target_scanner)
     entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)
@@ -800,10 +845,10 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     else:
       return False
     
-  def alignEntryToTarget(self, pointListNode):
+  def adjustEntry(self):
     # Get Points in scanner coordinates
-    entry_scanner = [*pointListNode.GetNthControlPointPosition(pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
-    target_scanner = [*pointListNode.GetNthControlPointPosition(pointListNode.GetControlPointIndexByLabel('TARGET')), 1.0]
+    entry_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
+    target_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('TARGET')), 1.0]
     # Calculate Points in robot coordinates
     target = self.mat_ScannerToRobot.MultiplyPoint(target_scanner)
     entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)
@@ -811,8 +856,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     entry = [target[0], entry[1], target[2], 1.0]
     # Update entry scanner in markups list (to align with target)
     entry_scanner = self.mat_RobotToScanner.MultiplyPoint(entry)
-    entry_scanner = entry_scanner[0:3]
-    pointListNode.SetNthControlPointPosition(pointListNode.GetControlPointIndexByLabel('ENTRY'), entry_scanner)
+    self.pointListNode.SetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('ENTRY'), entry_scanner[:3])
     return True
 
   def sendPlanning(self, entry, target):
@@ -832,7 +876,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     print('Sent target: %s' %(target))
 
   def sendDesiredPosition(self, goal):
-    # Publish entry message
+    # Publish desired_position message
     self.desired_position = goal
     goal_msg = self.pubGoal.GetBlankMessage()
     goal_msg.SetX(self.desired_position[0])
@@ -840,3 +884,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     goal_msg.SetZ(self.desired_position[2])
     self.pubGoal.Publish(goal_msg)
     print(self.desired_position)
+
+  def sendDesiredCommand(self, command):
+    # Publish desired_command message
+    self.pubCommand.Publish(command)
