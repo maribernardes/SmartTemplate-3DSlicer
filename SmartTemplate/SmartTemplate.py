@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from time import sleep
 import datetime
+import time
 
 class SmartTemplate(ScriptedLoadableModule):
 
@@ -260,7 +261,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # These connections ensure that we synch robot info with the logic
     self.addObserver(self.logic.jointValues, vtk.vtkCommand.ModifiedEvent, self.onJointsChange)
     self.addObserver(self.logic.robotPositionMarkupsNode, vtk.vtkCommand.ModifiedEvent, self.onPositionChange)
-    self.addObserver(self.logic.needleConfidenceNode, slicer.vtkMRMLTextNode.TextModifiedEvent, self.onTrackedTipChange)
+    #self.addObserver(self.logic.needleConfidenceNode, slicer.vtkMRMLTextNode.TextModifiedEvent, self.onTrackedTipChange)
+    self.addObserver(self.logic.trackedTipNode, slicer.vtkMRMLTransformNode.TransformModifiedEvent, self.onTrackedTipChange)
 
     # These connections ensure that whenever user changes some settings on the GUI, that is saved in the MRML scene
     # (in the selected parameter node).
@@ -499,7 +501,6 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
   # Synch experiment data when new tracked tip is received
   def onTrackedTipChange(self, caller=None, event=None):
-    print('New Tip. TODO: Logic')
     self.logic.updateTrackedTip()
 
   def loadRobot(self):
@@ -937,6 +938,9 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     else:
       return self.robotPositionMarkupsNode.GetNthControlPointPosition(0)
 
+  def getTipPosition(self):
+      return self.trackedTipMarkupsNode.GetNthControlPointPositionWorld(0)
+    
   def getTimestamp(self):
     return self.robotPositionTimestamp.GetText()
 
@@ -1048,6 +1052,18 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.pubCommand.Publish(command)
   
   def updateTrackedTip(self):
+    # Update
     confidenceValue = int(self.needleConfidenceNode.GetText())
+    tipPosition = self.getTipPosition()
     tipTracked = (confidenceValue >= 3)
     self.setTipMarkupColor(tipTracked)
+    robotRAS = self.getRobotPosition('world')
+    robotXYZ = self.getRobotPosition()
+    print('Timestamp: %s' %(time.perf_counter()))
+    if tipTracked:
+      print('Tip = %s, Confidence = %i' %(tipPosition, confidenceValue))
+      print('Robot = %s RAS, %s XYZ' %(robotRAS, robotXYZ))
+    else:
+      print('Tip not tracked')
+      print('Robot = %s RAS, %s XYZ' %(robotRAS, robotXYZ))
+
