@@ -188,7 +188,6 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.layout.addWidget(insertionCollapsibleButton)
     insertionFormLayout = qt.QFormLayout(insertionCollapsibleButton)
 
-
     insertionFormLayout.addRow('', qt.QLabel(''))  # Vertical space
     insertionButtonsLayout = qt.QHBoxLayout()
     self.toTargetButton= qt.QPushButton('Insert to target')
@@ -207,6 +206,32 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     insertionButtonsLayout.addWidget(self.stepSizeTextbox)
     insertionButtonsLayout.addWidget(qt.QLabel('mm'))
     insertionFormLayout.addRow(insertionButtonsLayout)
+
+    # Push tip coordinates to robot
+    trackTipLayout = qt.QHBoxLayout()
+    self.trackTipCheckBox = qt.QCheckBox()
+    self.trackTipCheckBox.checked = False
+    self.trackTipCheckBox.setToolTip('If checked, tracks current tip position in scanner coordinates')
+    trackTipLayout.addWidget(qt.QLabel('Track Tip'))
+    trackTipLayout.addWidget(self.trackTipCheckBox) 
+    trackTipLayout.addItem(qt.QSpacerItem(10, 0, qt.QSizePolicy.Fixed, qt.QSizePolicy.Minimum))
+
+    # Select Robot OpenIGTLink connection
+    self.igtlConnectionSelector = slicer.qMRMLNodeComboBox()
+    self.igtlConnectionSelector.nodeTypes = ['vtkMRMLIGTLConnectorNode']
+    self.igtlConnectionSelector.selectNodeUponCreation = True
+    self.igtlConnectionSelector.addEnabled = False
+    self.igtlConnectionSelector.removeEnabled = False
+    self.igtlConnectionSelector.noneEnabled = True
+    self.igtlConnectionSelector.showHidden = False
+    self.igtlConnectionSelector.showChildNodeTypes = False
+    self.igtlConnectionSelector.setMRMLScene(slicer.mrmlScene)
+    self.igtlConnectionSelector.setToolTip('Select OpenIGTLink server')
+    self.igtlConnectionSelector.enabled = False
+    self.igtlConnectionSelector.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Preferred)
+    trackTipLayout.addWidget(qt.QLabel('IGTLServer Tip:'))
+    trackTipLayout.addWidget(self.igtlConnectionSelector, 1)
+    insertionFormLayout.addRow(trackTipLayout)
 
     self.layout.addStretch(1)
     
@@ -235,10 +260,14 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # These connections ensure that we synch robot info with the logic
     self.addObserver(self.logic.jointValues, vtk.vtkCommand.ModifiedEvent, self.onJointsChange)
     self.addObserver(self.logic.robotPositionMarkupsNode, vtk.vtkCommand.ModifiedEvent, self.onPositionChange)
+    self.addObserver(self.logic.needleConfidenceNode, slicer.vtkMRMLTextNode.TextModifiedEvent, self.onTrackedTipChange)
 
     # These connections ensure that whenever user changes some settings on the GUI, that is saved in the MRML scene
     # (in the selected parameter node).
     self.zTransformSelector.connect('currentNodeChanged(vtkMRMLNode*)', self.updateParameterNodeFromGUI)
+    self.trackTipCheckBox.connect('toggled(bool)', self.updateParameterNodeFromGUI)
+    self.igtlConnectionSelector.connect('currentNodeChanged(vtkMRMLNode*)', self.updateParameterNodeFromGUI)
+    
     
     # Connect Qt widgets to event calls
     self.loadButton.connect('clicked(bool)', self.loadRobot)
@@ -251,12 +280,12 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.toTargetButton.connect('clicked(bool)', self.toTarget)
     self.stepButton.connect('clicked(bool)', self.insertStep)
     self.pointListSelector.connect('updateFinished()', self.onPointListChanged)
-
+    self.trackTipCheckBox.connect('toggled(bool)', self.onTrackTipSelected)
+    self.igtlConnectionSelector.connect('currentNodeChanged(vtkMRMLNode*)', self.onTrackTipSelected)
+    
     # Initialize widget variables and updateGUI
     self.updateGUI()
     self.pointListSelector.setCurrentNode(self.logic.pointListNode)
-    interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
-    interactionNode.SetCurrentInteractionMode(interactionNode.ViewTransform)  # Instead of interactionNode.Place
 
 
   ### Widget functions ###################################################################
@@ -277,7 +306,6 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
   # Called just before the scene is closed.
   # Parameter node will be reset, do not use it anymore
   def onSceneStartClose(self, caller, event):
-    self.logic.closeConnection()    
     self.setParameterNode(None)
 
   # Called just after the scene is closed.
@@ -290,7 +318,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
   # Parameter node stores all user choices in parameter values, node selections, etc.
   # so that when the scene is saved and reloaded, these settings are restored.
   def initializeParameterNode(self):
-    # Load default parameters in logic module
+    # Load default parameters in logic module    
     self.setParameterNode(self.logic.getParameterNode())
 
   # Set and observe parameter node.
@@ -320,6 +348,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.zTransformSelector.setCurrentNode(self._parameterNode.GetNodeReference('ZTransform'))
     self.pointListSelector.setCurrentNode(self._parameterNode.GetNodeReference('Planning'))
     self.isRobotLoaded = self._parameterNode.GetParameter('RobotLoaded') == 'True'
+    self.trackTipCheckBox.checked = (self._parameterNode.GetParameter('TrackTip') == 'True')
+    self.igtlConnectionSelector.setCurrentNode(self._parameterNode.GetNodeReference('TipIGTLServer'))
     self.updateGUI()
     # All the GUI updates are done
     self._updatingGUIFromParameterNode = False
@@ -333,6 +363,9 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     wasModified = self._parameterNode.StartModify()  
     # Update paramenters_nodes
     self._parameterNode.SetNodeReferenceID('ZTransform', self.zTransformSelector.currentNodeID)
+    self._parameterNode.SetParameter('TrackTip', 'True' if self.trackTipCheckBox.checked else 'False')
+    self._parameterNode.SetNodeReferenceID('TipIGTLServer', self.igtlConnectionSelector.currentNodeID)
+
     # All paramenter_nodes updates are done
     self._parameterNode.EndModify(wasModified)
     
@@ -340,10 +373,14 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
   def onPointListChanged(self):    
     self.logic.addPlanningPoint()
     self.updateGUI()
-  
-  # Update the connection statusLabel  
-  def onConnectionStatusChange(self, caller=None, event=None):
-    self.updateGUI()
+
+  # Called when options for tracking tip are updated
+  def onTrackTipSelected(self, caller=None, event=None):
+    if (self.trackTipCheckBox.checked is False) or (self.igtlConnectionSelector.currentNode() is None):
+      print('Tip track is OFF')
+    else:
+      print('Tip track is ON')
+      self.logic.registerInputNodes(self.igtlConnectionSelector.currentNode())
 
   # Update GUI buttons, markupWidget and connection statusLabel
   def updateGUI(self):
@@ -364,7 +401,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.retractButton.enabled = self.isRobotLoaded
     self.alignButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
     self.approachButton.enabled = robotAligned and pointsSelected and robotRegistered and self.isRobotLoaded
-    
+    self.igtlConnectionSelector.enabled = self.trackTipCheckBox.checked
+
     # Add joints if not already added:
     if self.jointNames is None and self.isRobotLoaded:
       self.addJoints()
@@ -458,6 +496,11 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
       self.positionRASTextbox.setText('(---, ---, ---)')
     self.timeStampTextbox.setText(self.logic.getTimestamp())
     self.updateGUI()
+
+  # Synch experiment data when new tracked tip is received
+  def onTrackedTipChange(self, caller=None, event=None):
+    print('New Tip. TODO: Logic')
+    self.logic.updateTrackedTip()
 
   def loadRobot(self):
     print('UI: loadRobot()')
@@ -569,7 +612,24 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       self.robotPositionMarkupsNode.SetName('RobotPosition')
       slicer.mrmlScene.AddNode(self.robotPositionMarkupsNode)
     self.initializeRobotPositionMarkup()
-
+    # Tracked tip (optional)
+    self.needleConfidenceNode = slicer.util.getFirstNodeByClassByName('vtkMRMLTextNode','CurrentTipConfidence')
+    if self.needleConfidenceNode is None:
+        self.needleConfidenceNode = slicer.vtkMRMLTextNode()
+        self.needleConfidenceNode.SetName('CurrentTipConfidence')
+        slicer.mrmlScene.AddNode(self.needleConfidenceNode)
+    self.trackedTipNode = slicer.util.getFirstNodeByClassByName('vtkMRMLLinearTransformNode','CurrentTrackedTip')
+    if self.trackedTipNode is None:
+        self.trackedTipNode = slicer.vtkMRMLLinearTransformNode()
+        self.trackedTipNode.SetName('CurrentTrackedTip')
+        slicer.mrmlScene.AddNode(self.trackedTipNode)
+    self.trackedTipMarkupsNode= slicer.util.getFirstNodeByName('TrackedTip', className='vtkMRMLMarkupsFiducialNode')
+    if self.trackedTipMarkupsNode is None:
+      self.trackedTipMarkupsNode = slicer.vtkMRMLMarkupsFiducialNode()
+      self.trackedTipMarkupsNode.SetName('TrackedTip')
+      slicer.mrmlScene.AddNode(self.trackedTipMarkupsNode)
+    self.initializeTrackedTipMarkup()
+    
     # Create PointList node for planning
     self.pointListNode = slicer.util.getFirstNodeByName('Planning', className='vtkMRMLMarkupsFiducialNode')
     if self.pointListNode is None:
@@ -587,6 +647,18 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
 
   ### Logic functions ###################################################################
 
+  # Initialize module parameter node with default settings
+  def setDefaultParameters(self, parameterNode):
+    # self.initialize()
+    if not parameterNode.GetParameter('RobotLoaded'):
+      if self.joint_names is None:
+        isRobotLoaded = 'False'
+      else:
+        isRobotLoaded = 'True'
+      parameterNode.SetParameter('RobotLoaded', isRobotLoaded)  
+    if not parameterNode.GetNodeReference('Planning'):
+      parameterNode.SetNodeReferenceID('Planning', self.pointListNode.GetID())
+
   def initializeRobotPositionMarkup(self):
     # Ensure there is only one control point
     if self.robotPositionMarkupsNode.GetNumberOfControlPoints() > 1:
@@ -601,27 +673,52 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     displayNode = self.robotPositionMarkupsNode.GetDisplayNode()
     if displayNode:
         displayNode.SetGlyphScale(1.5)  # 1% glyph size and color
-        displayNode.SetSelectedColor(0.667, 1.0, 0.498)
+        displayNode.SetVisibility(False)
+        displayNode.SetSelectedColor(1.0, 1.0, 1.0)
     else:
         # If the display node does not exist, create it and set the glyph size and color
         self.robotPositionMarkupsNode.CreateDefaultDisplayNodes()
         self.robotPositionMarkupsNode.GetDisplayNode().SetGlyphScale(1.5)
-        displayNode.SetSelectedColor(0.667, 1.0, 0.498)
-          # TODO: Set mat_RobotToScanner Transform 
+        displayNode.SetVisibility(False)
+        displayNode.SetSelectedColor(1.0, 1.0, 1.0)
     if self.robotToScannerTransformNode:
       self.robotPositionMarkupsNode.SetAndObserveTransformNodeID(self.robotToScannerTransformNode.GetID())
 
-  # Initialize module parameter node with default settings
-  def setDefaultParameters(self, parameterNode):
-    # self.initialize()
-    if not parameterNode.GetParameter('RobotLoaded'):
-      if self.joint_names is None:
-        isRobotLoaded = 'False'
-      else:
-        isRobotLoaded = 'True'
-      parameterNode.SetParameter('RobotLoaded', isRobotLoaded)  
-    if not parameterNode.GetNodeReference('Planning'):
-      parameterNode.SetNodeReferenceID('Planning', self.pointListNode.GetID())
+  def initializeTrackedTipMarkup(self):
+    # Ensure there is only one control point
+    if self.trackedTipMarkupsNode.GetNumberOfControlPoints() > 1:
+        self.trackedTipMarkupsNode.RemoveAllControlPoints()
+    # If no control point exists, add one at (0,0,0)
+    if self.trackedTipMarkupsNode.GetNumberOfControlPoints() == 0:
+        self.trackedTipMarkupsNode.AddControlPoint(vtk.vtkVector3d(0, 0, 0), "")
+    # Ensure tip is labeled, locked and one-point only
+    self.trackedTipMarkupsNode.SetNthControlPointLabel(0, "")
+    self.trackedTipMarkupsNode.SetLocked(True)
+    self.trackedTipMarkupsNode.SetFixedNumberOfControlPoints(True)           
+    displayNode = self.trackedTipMarkupsNode.GetDisplayNode()
+    if displayNode:
+        displayNode.SetGlyphScale(1.5)  # 1% glyph size and color
+        self.setTipMarkupColor(None)
+    else:
+        # If the display node does not exist, create it and set the glyph size and color
+        self.trackedTipMarkupsNode.CreateDefaultDisplayNodes()
+        self.trackedTipMarkupsNode.GetDisplayNode().SetGlyphScale(1.5)
+        self.setTipMarkupColor(None)
+    if self.trackedTipNode:
+      self.trackedTipMarkupsNode.SetAndObserveTransformNodeID(self.trackedTipNode.GetID())
+
+  # Set TipMarkup Color according to tracking status
+  def setTipMarkupColor(self, tipTracked:bool = None):
+    displayNode = self.trackedTipMarkupsNode.GetDisplayNode()
+    if tipTracked is None:
+      displayNode.SetVisibility(False)
+      displayNode.SetSelectedColor(1.0, 0.502, 0.502) #PINK (default)
+    elif tipTracked is True:
+      displayNode.SetVisibility(True)
+      displayNode.SetSelectedColor(0.667, 1.0, 0.498) #GREEN (default)
+    else:
+      displayNode.SetVisibility(True)
+      displayNode.SetSelectedColor(1.0, 1.0, 0.498) #YELLOW (default)
 
   # Print vtkMatrix4x4 (for debugging)
   def printVtkMatrix4x4(self, matrix4x4, name=''):
@@ -774,6 +871,14 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     else:
       return (self.joint_names, self.joint_limits)
 
+  def registerInputNodes(self, igtlConnectionNode):
+    if igtlConnectionNode is None:
+      return
+    if self.needleConfidenceNode is not None:
+      igtlConnectionNode.RegisterIncomingMRMLNode(self.needleConfidenceNode)
+    if self.trackedTipNode is not None:
+      igtlConnectionNode.RegisterIncomingMRMLNode(self.trackedTipNode)
+
   def loadRobot(self):
     # Create robot node and publisher to /world_pose message
     if self.robotNode is None:
@@ -821,6 +926,9 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     world_msg.SetTransform(self.mat_RobotToScanner)
     self.pubWorld.Publish(world_msg)
     self.printVtkMatrix4x4(self.mat_RobotToScanner, '\world_pose')
+    # Update robot position markups node
+    displayNode = self.robotPositionMarkupsNode.GetDisplayNode()
+    displayNode.SetVisibility(True)
     return True
   
   def getRobotPosition(self, frame=None):
@@ -938,3 +1046,8 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
   def sendDesiredCommand(self, command):
     # Publish desired_command message
     self.pubCommand.Publish(command)
+  
+  def updateTrackedTip(self):
+    confidenceValue = int(self.needleConfidenceNode.GetText())
+    tipTracked = (confidenceValue >= 3)
+    self.setTipMarkupColor(tipTracked)
