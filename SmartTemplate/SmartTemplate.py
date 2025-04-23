@@ -141,16 +141,16 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Points selection
     markupsLayout = qt.QFormLayout()
     planningFormLayout.addLayout(markupsLayout)
-    self.pointListSelector = slicer.qSlicerSimpleMarkupsWidget()    
-    self.pointListSelector.setMRMLScene(slicer.mrmlScene)
-    self.pointListSelector.setNodeSelectorVisible(False)
-    self.pointListSelector.markupsPlaceWidget().setPlaceMultipleMarkups(True)
-    self.pointListSelector.defaultNodeColor = qt.QColor(170,0,0)
-    self.pointListSelector.setMaximumHeight(90)
-    self.pointListSelector.tableWidget().show()
-    self.pointListSelector.toolTip = 'Select 2 points: TARGET and ENTRY'
-    # self.pointListSelector.markupsPlaceWidget().setPlaceModePersistency(True)
-    markupsLayout.addRow('Planned points:', self.pointListSelector)
+    self.planningSelector = slicer.qSlicerSimpleMarkupsWidget()    
+    self.planningSelector.setMRMLScene(slicer.mrmlScene)
+    self.planningSelector.setNodeSelectorVisible(False)
+    self.planningSelector.markupsPlaceWidget().setPlaceMultipleMarkups(True)
+    self.planningSelector.defaultNodeColor = qt.QColor(170,0,0)
+    self.planningSelector.setMaximumHeight(90)
+    self.planningSelector.tableWidget().show()
+    self.planningSelector.toolTip = 'Select 2 points: TARGET and ENTRY'
+    # self.planningSelector.markupsPlaceWidget().setPlaceModePersistency(True)
+    markupsLayout.addRow('Planned points:', self.planningSelector)
     
     # Adjust Entry button 
     self.adjustEntryButton = qt.QPushButton('Adjust ENTRY to TARGET')
@@ -260,7 +260,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     # These connections ensure that we synch robot info with the logic
     self.addObserver(self.logic.jointValues, vtk.vtkCommand.ModifiedEvent, self.onJointsChange)
-    self.addObserver(self.logic.robotPositionMarkupsNode, vtk.vtkCommand.ModifiedEvent, self.onPositionChange)
+    self.addObserver(self.logic.robotPositionNode, vtk.vtkCommand.ModifiedEvent, self.onPositionChange)
     #self.addObserver(self.logic.needleConfidenceNode, slicer.vtkMRMLTextNode.TextModifiedEvent, self.onTrackedTipChange)
     self.addObserver(self.logic.trackedTipNode, slicer.vtkMRMLTransformNode.TransformModifiedEvent, self.onTrackedTipChange)
 
@@ -281,13 +281,11 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.approachButton.connect('clicked(bool)', self.approachSkin)
     self.toTargetButton.connect('clicked(bool)', self.toTarget)
     self.stepButton.connect('clicked(bool)', self.insertStep)
-    self.pointListSelector.connect('updateFinished()', self.onPointListChanged)
-    self.trackTipCheckBox.connect('toggled(bool)', self.onTrackTipSelected)
-    self.igtlConnectionSelector.connect('currentNodeChanged(vtkMRMLNode*)', self.onTrackTipSelected)
+    self.planningSelector.connect('updateFinished()', self.onPlanningChanged)
     
     # Initialize widget variables and updateGUI
     self.updateGUI()
-    self.pointListSelector.setCurrentNode(self.logic.pointListNode)
+    self.planningSelector.setCurrentNode(self.logic.planningMarkupsNode)
 
 
   ### Widget functions ###################################################################
@@ -348,7 +346,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self._updatingGUIFromParameterNode = True
     # Update node selectors and input boxes and sliders
     self.zTransformSelector.setCurrentNode(self._parameterNode.GetNodeReference('ZTransform'))
-    self.pointListSelector.setCurrentNode(self._parameterNode.GetNodeReference('Planning'))
+    self.planningSelector.setCurrentNode(self._parameterNode.GetNodeReference('Planning'))
     self.isRobotLoaded = self._parameterNode.GetParameter('RobotLoaded') == 'True'
     self.trackTipCheckBox.checked = (self._parameterNode.GetParameter('TrackTip') == 'True')
     self.igtlConnectionSelector.setCurrentNode(self._parameterNode.GetNodeReference('TipIGTLServer'))
@@ -372,17 +370,16 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self._parameterNode.EndModify(wasModified)
     
   # Called when the Point List is updated
-  def onPointListChanged(self):    
+  def onPlanningChanged(self):    
     self.logic.addPlanningPoint()
     self.updateGUI()
 
   # Called when options for tracking tip are updated
-  def onTrackTipSelected(self, caller=None, event=None):
+  def isTrackTipSelected(self, caller=None, event=None):
     if (self.trackTipCheckBox.checked is False) or (self.igtlConnectionSelector.currentNode() is None):
-      print('Tip track is OFF')
+      return False
     else:
-      print('Tip track is ON')
-      self.logic.registerInputNodes(self.igtlConnectionSelector.currentNode())
+      return True
 
   # Update GUI buttons, markupWidget and connection statusLabel
   def updateGUI(self):
@@ -394,7 +391,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
       robotAligned = self.logic.isRobotAligned()
     else:
       robotAligned = False
-
+    
     # Update buttons accordingly
     self.loadButton.enabled = not self.isRobotLoaded
     self.registerButton.enabled = zFrameSelected and self.isRobotLoaded
@@ -408,7 +405,6 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Add joints if not already added:
     if self.jointNames is None and self.isRobotLoaded:
       self.addJoints()
-    # self.pointListSelector.placeActive(not pointsSelected)
 
   def format3DPoint(self, point, frame=None, decimals=2):
     formatted = f"({point[0]:.{decimals}f}, {point[1]:.{decimals}f}, {point[2]:.{decimals}f})"
@@ -506,48 +502,56 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
   def loadRobot(self):
     print('UI: loadRobot()')
     self.logic.loadRobot()
+    print('____________________')
     self.updateGUI()
 
   def registerRobot(self):
     print('UI: registerRobot()')
     zTransformNode = self.zTransformSelector.currentNode()
     self.logic.registerRobot(zTransformNode)
+    print('____________________')
     self.updateGUI()
 
   def adjustEntry(self):
     print('UI: adjustEntry()')
     # Get current transform node
-    pointListNode = self.pointListSelector.currentNode()
     self.logic.adjustEntry()
+    print('____________________')
     self.updateGUI()
 
   def retractNeedle(self):
     print('UI: retractNeedle()')
     self.logic.sendDesiredCommand('RETRACT')
+    print('____________________')
     self.updateGUI()
 
   def homeRobot(self):
     print('UI: homeRobot()')
     self.logic.sendDesiredCommand('HOME')
+    print('____________________')
     self.updateGUI()
 
   def alignForInsertion(self):
     print('UI: alignForInsertion()')
     self.logic.alignForInsertion()
+    print('____________________')
     self.updateGUI()
 
   def approachSkin(self):
     print('UI: approachSkin()')
     self.logic.approachSkin()
+    print('____________________')
     self.updateGUI()
 
   def toTarget(self):
-    print('UI: toTarget()')
+    print('UI: toTarget() - TODO: Still not implemented')
+    print('____________________')
     self.updateGUI()
 
   def insertStep(self):
     print('UI: insertStep()')
     self.logic.insertStep(float(self.stepSizeTextbox.text.strip()))
+    print('____________________')
     self.updateGUI()    
 ################################################################################################################################################
 # Logic Class
@@ -585,7 +589,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.mat_ZFrameToScanner = None
     self.mat_RobotToScanner =  None
     self.mat_ScannerToRobot =  None
-    self.eps = 0.45
+    self.eps = 0.6
 
     # If robot node is available, make sure the /robot_state_publisher is up
     if self.robotNode:
@@ -599,6 +603,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     if self.robotToScannerTransformNode is None:
         self.robotToScannerTransformNode = slicer.vtkMRMLLinearTransformNode()
         self.robotToScannerTransformNode.SetName('RobotToScannerTransform')
+        self.robotToScannerTransformNode.SetHideFromEditors(True)
         slicer.mrmlScene.AddNode(self.robotToScannerTransformNode)
     # Robot position message header
     self.robotPositionTimestamp = slicer.util.getFirstNodeByName('RobotPositionTimestamp', className='vtkMRMLTextNode')
@@ -606,13 +611,18 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       self.robotPositionTimestamp = slicer.vtkMRMLTextNode()
       self.robotPositionTimestamp.SetName('RobotPositionTimestamp')
       slicer.mrmlScene.AddNode(self.robotPositionTimestamp)
-    # Robot position markups node
+    self.robotPositionNode = slicer.util.getFirstNodeByClassByName('vtkMRMLLinearTransformNode','RobotPositionTransform')
+    if self.robotPositionNode is None:
+        self.robotPositionNode = slicer.vtkMRMLLinearTransformNode()
+        self.robotPositionNode.SetName('RobotPositionTransform')
+        self.robotPositionNode.SetHideFromEditors(True)
+        slicer.mrmlScene.AddNode(self.robotPositionNode)
     self.robotPositionMarkupsNode= slicer.util.getFirstNodeByName('RobotPosition', className='vtkMRMLMarkupsFiducialNode')
     if self.robotPositionMarkupsNode is None:
       self.robotPositionMarkupsNode = slicer.vtkMRMLMarkupsFiducialNode()
       self.robotPositionMarkupsNode.SetName('RobotPosition')
       slicer.mrmlScene.AddNode(self.robotPositionMarkupsNode)
-    self.initializeRobotPositionMarkup()
+    self.initializeRobotPosition()
     # Tracked tip (optional)
     self.needleConfidenceNode = slicer.util.getFirstNodeByClassByName('vtkMRMLTextNode','CurrentTipConfidence')
     if self.needleConfidenceNode is None:
@@ -629,17 +639,17 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       self.trackedTipMarkupsNode = slicer.vtkMRMLMarkupsFiducialNode()
       self.trackedTipMarkupsNode.SetName('TrackedTip')
       slicer.mrmlScene.AddNode(self.trackedTipMarkupsNode)
-    self.initializeTrackedTipMarkup()
+    self.initializeTrackedTip()
     
-    # Create PointList node for planning
-    self.pointListNode = slicer.util.getFirstNodeByName('Planning', className='vtkMRMLMarkupsFiducialNode')
-    if self.pointListNode is None:
-        self.pointListNode = slicer.vtkMRMLMarkupsFiducialNode()
-        self.pointListNode.SetName('Planning')
-        slicer.mrmlScene.AddNode(self.pointListNode)
-    displayNodePointList = self.pointListNode.GetDisplayNode()
-    if displayNodePointList:
-      displayNodePointList.SetGlyphScale(1.5)   
+    # Create Planning Markups node for planning
+    self.planningMarkupsNode = slicer.util.getFirstNodeByName('Planning', className='vtkMRMLMarkupsFiducialNode')
+    if self.planningMarkupsNode is None:
+        self.planningMarkupsNode = slicer.vtkMRMLMarkupsFiducialNode()
+        self.planningMarkupsNode.SetName('Planning')
+        slicer.mrmlScene.AddNode(self.planningMarkupsNode)
+    displayNode = self.planningMarkupsNode.GetDisplayNode()
+    if displayNode:
+      displayNode.SetGlyphScale(1.5)   
     
     # Create ScriptedModule node for joint values
     self.jointValues = slicer.util.getFirstNodeByName('JointValues', className='vtkMRMLScriptedModuleNode')
@@ -658,9 +668,9 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         isRobotLoaded = 'True'
       parameterNode.SetParameter('RobotLoaded', isRobotLoaded)  
     if not parameterNode.GetNodeReference('Planning'):
-      parameterNode.SetNodeReferenceID('Planning', self.pointListNode.GetID())
+      parameterNode.SetNodeReferenceID('Planning', self.planningMarkupsNode.GetID())
 
-  def initializeRobotPositionMarkup(self):
+  def initializeRobotPosition(self):
     # Ensure there is only one control point
     if self.robotPositionMarkupsNode.GetNumberOfControlPoints() > 1:
         self.robotPositionMarkupsNode.RemoveAllControlPoints()
@@ -682,10 +692,10 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         self.robotPositionMarkupsNode.GetDisplayNode().SetGlyphScale(1.5)
         displayNode.SetVisibility(False)
         displayNode.SetSelectedColor(1.0, 1.0, 1.0)
-    if self.robotToScannerTransformNode:
-      self.robotPositionMarkupsNode.SetAndObserveTransformNodeID(self.robotToScannerTransformNode.GetID())
+    self.robotPositionMarkupsNode.SetAndObserveTransformNodeID(self.robotPositionNode.GetID())
+    self.robotPositionNode.SetAndObserveTransformNodeID(self.robotToScannerTransformNode.GetID())
 
-  def initializeTrackedTipMarkup(self):
+  def initializeTrackedTip(self):
     # Ensure there is only one control point
     if self.trackedTipMarkupsNode.GetNumberOfControlPoints() > 1:
         self.trackedTipMarkupsNode.RemoveAllControlPoints()
@@ -705,8 +715,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         self.trackedTipMarkupsNode.CreateDefaultDisplayNodes()
         self.trackedTipMarkupsNode.GetDisplayNode().SetGlyphScale(1.5)
         self.setTipMarkupColor(None)
-    if self.trackedTipNode:
-      self.trackedTipMarkupsNode.SetAndObserveTransformNodeID(self.trackedTipNode.GetID())
+    self.trackedTipMarkupsNode.SetAndObserveTransformNodeID(self.trackedTipNode.GetID())
 
   # Set TipMarkup Color according to tracking status
   def setTipMarkupColor(self, tipTracked:bool = None):
@@ -755,11 +764,14 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     timestamp = self.formatTimestampToLocalTimeText(stamp.GetSec(), stamp.GetNanosec())
     self.robotPositionTimestamp.SetText(timestamp)
     self.robotPositionTimestamp.Modified()
-    # Update position markups node
+    # Update robot position node
     point =  position_msg.GetPoint()
-    position = [point.GetX(), point.GetY(), point.GetZ()]
-    self.robotPositionMarkupsNode.SetNthControlPointPosition(0, position)
-    self.robotPositionMarkupsNode.Modified()
+    robotPositionMatrix = vtk.vtkMatrix4x4()
+    robotPositionMatrix.SetElement(0,3, point.GetX())
+    robotPositionMatrix.SetElement(1,3, point.GetY())
+    robotPositionMatrix.SetElement(2,3, point.GetZ())
+    self.robotPositionNode.SetMatrixTransformToParent(robotPositionMatrix)
+    self.robotPositionNode.Modified()
 
   # Wait for robot models to be ready
   def onRobotModelReady(self, caller=None, event=None):
@@ -872,14 +884,6 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     else:
       return (self.joint_names, self.joint_limits)
 
-  def registerInputNodes(self, igtlConnectionNode):
-    if igtlConnectionNode is None:
-      return
-    if self.needleConfidenceNode is not None:
-      igtlConnectionNode.RegisterIncomingMRMLNode(self.needleConfidenceNode)
-    if self.trackedTipNode is not None:
-      igtlConnectionNode.RegisterIncomingMRMLNode(self.trackedTipNode)
-
   def loadRobot(self):
     # Create robot node and publisher to /world_pose message
     if self.robotNode is None:
@@ -932,85 +936,96 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     displayNode.SetVisibility(True)
     return True
   
-  def getRobotPosition(self, frame=None):
+  def getTranslation(self, linearTransformNode, frame=None):
+    matrix = vtk.vtkMatrix4x4()
     if frame == 'world':
-      return self.robotPositionMarkupsNode.GetNthControlPointPositionWorld(0)
+      linearTransformNode.GetMatrixTransformToWorld(matrix)
     else:
-      return self.robotPositionMarkupsNode.GetNthControlPointPosition(0)
+      linearTransformNode.GetMatrixTransformToParent(matrix)
+    # Extract translation (last column of matrix, ignoring bottom row)
+    tx = matrix.GetElement(0, 3)
+    ty = matrix.GetElement(1, 3)
+    tz = matrix.GetElement(2, 3)
+    return [tx, ty, tz]
+
+  def getRobotPosition(self, frame=None):
+    return self.getTranslation(self.robotPositionNode, frame=frame)
 
   def getTipPosition(self):
-      return self.trackedTipMarkupsNode.GetNthControlPointPositionWorld(0)
-    
+    return self.getTranslation(self.trackedTipNode)
+
+  def getPlanningPoint(self, name='TARGET'):
+    idx = self.planningMarkupsNode.GetControlPointIndexByLabel(name)
+    return list(self.planningMarkupsNode.GetNthControlPointPosition(idx))
+
   def getTimestamp(self):
     return self.robotPositionTimestamp.GetText()
 
   def getNumberOfPoints(self):
-    if self.pointListNode is not None:
-      return self.pointListNode.GetNumberOfDefinedControlPoints()
+    if self.planningMarkupsNode is not None:
+      return self.planningMarkupsNode.GetNumberOfDefinedControlPoints()
     else: 
       return 0
   
   def addPlanningPoint(self):
-    if self.pointListNode is not None:
-      N = self.pointListNode.GetNumberOfControlPoints()
+    if self.planningMarkupsNode is not None:
+      N = self.planningMarkupsNode.GetNumberOfControlPoints()
       if N>=1:
-        self.pointListNode.SetNthControlPointLabel(0, 'TARGET')
+        self.planningMarkupsNode.SetNthControlPointLabel(0, 'TARGET')
       if N>=2:
-        self.pointListNode.SetNthControlPointLabel(1, 'ENTRY')
-      if self.pointListNode.GetNumberOfDefinedControlPoints()>=2:
-        self.pointListNode.SetFixedNumberOfControlPoints(2)
+        self.planningMarkupsNode.SetNthControlPointLabel(1, 'ENTRY')
+      if self.planningMarkupsNode.GetNumberOfDefinedControlPoints()>=2:
+        self.planningMarkupsNode.SetFixedNumberOfControlPoints(2)
 
   # Place robot at the skin entry point
   def alignForInsertion(self):
-    entry_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0] # Get entry point in scanner coordinates
-    entry = list(self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)) # Calculate entry point in robot coordinates
-    entry[1] = 0.0
-    self.sendDesiredPosition(entry[:3])
+    entry_scanner = [*self.getPlanningPoint('ENTRY'), 1.0]       # Get entry point in scanner coordinates
+    entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner) # Convert to robot coordinates
+    desired_position = [entry[0], 0.0, entry[2]]
+    self.sendDesiredPosition(desired_position)
     return True
     
   # Place robot at the skin entry point
   def approachSkin(self):
-    # Get entry point in scanner coordinates
-    entry_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
-    # Calculate entry point in robot coordinates
-    entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)
-    self.sendDesiredPosition(entry[:3])
+    entry_scanner = [*self.getPlanningPoint('ENTRY'), 1.0]        # Get entry point in scanner coordinates
+    entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)  # Convert to robot coordinates
+    self.sendDesiredPosition([entry[0], entry[1], entry[2]])
     return True
 
   def isRobotAligned(self):
-    entry_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
-    entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)
-    robot = [*self.robotPositionMarkupsNode.GetNthControlPointPosition(0), 1.0]
-    if abs(robot[0] - entry[0]) < self.eps and abs(robot[2] - entry[2]) < self.eps:
+    entry_scanner = [*self.getPlanningPoint('ENTRY'), 1.0] 
+    entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)  # Convert to robot coordinates
+    robot = self.getRobotPosition()
+    if (abs(robot[0] - entry[0]) <= self.eps) and (abs(robot[2] - entry[2]) <= self.eps):
       return True
     else:
       return False
 
   def isEntryAligned(self):
-    # Get Points in scanner coordinates
-    entry_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
-    target_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('TARGET')), 1.0]
-    # Calculate Points in robot coordinates
-    target = self.mat_ScannerToRobot.MultiplyPoint(target_scanner)
-    entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)
-    # Align entry with target (in robot coordinates)
-    aligned_entry = [target[0], entry[1], target[2], 1.0]
+    #TODO: Not used
+    '''
+    entry_scanner = [*self.getPlanningPoint('ENTRY'), 1.0]          # Get entry point in scanner coordinates
+    entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)    # Convert to robot coordinates
+    target_scanner = [*self.getPlanningPoint('TARGET'), 1.0]        # Get target point in scanner coordinates
+    target = self.mat_ScannerToRobot.MultiplyPoint(target_scanner)  # Convert to robot coordinates
+    aligned_entry = [target[0], entry[1], target[2], 1.0]           # Align entry with target (in robot coordinates)
     if entry == aligned_entry:
       return True
     else:
       return False
+    '''
 
   # Place robot at the skin entry point
   def insertStep(self, stepSize):
-    goal = list(self.getRobotPosition())
+    goal = self.getRobotPosition()
     goal[1] += stepSize
     self.sendDesiredPosition(goal)
     return True
     
   def adjustEntry(self):
     # Get Points in scanner coordinates
-    entry_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('ENTRY')), 1.0]
-    target_scanner = [*self.pointListNode.GetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('TARGET')), 1.0]
+    entry_scanner = [*self.getPlanningPoint('ENTRY'), 1.0]
+    target_scanner = [*self.getPlanningPoint('TARGET'), 1.0]
     # Calculate Points in robot coordinates
     target = self.mat_ScannerToRobot.MultiplyPoint(target_scanner)
     entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)
@@ -1018,7 +1033,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     entry = [target[0], entry[1], target[2], 1.0]
     # Update entry scanner in markups list (to align with target)
     entry_scanner = self.mat_RobotToScanner.MultiplyPoint(entry)
-    self.pointListNode.SetNthControlPointPosition(self.pointListNode.GetControlPointIndexByLabel('ENTRY'), entry_scanner[:3])
+    self.planningMarkupsNode.SetNthControlPointPosition(self.planningMarkupsNode.GetControlPointIndexByLabel('ENTRY'), entry_scanner[:3])
     return True
 
   def sendPlanning(self, entry, target):
@@ -1045,15 +1060,20 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     goal_msg.SetY(self.desired_position[1])
     goal_msg.SetZ(self.desired_position[2])
     self.pubGoal.Publish(goal_msg)
-    print(self.desired_position)
+    print('Desired position = [%.4f, %.4f, %.4f] XYZ' % (self.desired_position[0], self.desired_position[1], self.desired_position[2]))
 
   def sendDesiredCommand(self, command):
     # Publish desired_command message
     self.pubCommand.Publish(command)
   
   def updateTrackedTip(self):
-    # Update
-    confidenceValue = int(self.needleConfidenceNode.GetText())
+    # Extract confidence 
+    msg_text = self.needleConfidenceNode.GetText()
+    parts = msg_text.split(';') # Split by ';'
+    tipTimestamp = float(parts[0].strip())
+    tipConfidence = parts[1].strip()
+    confidenceValue = int(parts[2].strip())
+    # Extract position
     tipPosition = self.getTipPosition()
     tipTracked = (confidenceValue >= 3)
     self.setTipMarkupColor(tipTracked)
@@ -1061,9 +1081,8 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     robotXYZ = self.getRobotPosition()
     print('Timestamp: %s' %(time.perf_counter()))
     if tipTracked:
-      print('Tip = %s, Confidence = %i' %(tipPosition, confidenceValue))
-      print('Robot = %s RAS, %s XYZ' %(robotRAS, robotXYZ))
+      print('Tip = [%.4f, %.4f, %.4f] RAS, Confidence = %s, Timestamp = %s' % (tipPosition[0], tipPosition[1], tipPosition[2], tipConfidence, str(tipTimestamp)))
     else:
-      print('Tip not tracked')
-      print('Robot = %s RAS, %s XYZ' %(robotRAS, robotXYZ))
-
+      print('Tip not tracked, Confidence = %s, Timestamp = %s' % (tipConfidence, str(tipTimestamp)))
+    print('Robot = [%.4f, %.4f, %.4f] RAS, [%.4f, %.4f, %.4f] XYZ' % (robotRAS[0], robotRAS[1], robotRAS[2], robotXYZ[0], robotXYZ[1], robotXYZ[2]))
+    print('____________________')
