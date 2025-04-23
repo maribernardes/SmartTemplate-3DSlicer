@@ -198,7 +198,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     self.stepButton= qt.QPushButton('Insert length')
     self.stepButton.toolTip = 'Insert the needle stepwise a certain lenght'
-    self.stepButton.enabled = True
+    self.stepButton.enabled = False
     insertionButtonsLayout.addWidget(self.stepButton)
 
     self.stepSizeTextbox = qt.QLineEdit('20.0')
@@ -398,10 +398,11 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.adjustEntryButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
     self.homeButton.enabled = self.isRobotLoaded
     self.retractButton.enabled = self.isRobotLoaded
+    self.stepButton.enabled = self.isRobotLoaded
+    self.toTargetButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
     self.alignButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
     self.approachButton.enabled = robotAligned and pointsSelected and robotRegistered and self.isRobotLoaded
     self.igtlConnectionSelector.enabled = self.trackTipCheckBox.checked
-
     # Add joints if not already added:
     if self.jointNames is None and self.isRobotLoaded:
       self.addJoints()
@@ -544,7 +545,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.updateGUI()
 
   def toTarget(self):
-    print('UI: toTarget() - TODO: Still not implemented')
+    print('UI: toTarget()')
+    self.logic.toTarget()
     print('____________________')
     self.updateGUI()
 
@@ -1014,8 +1016,16 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     else:
       return False
     '''
+  # Insert robot to target depth
+  def toTarget(self):
+    target_scanner = [*self.getPlanningPoint('TARGET'), 1.0]
+    target = self.mat_ScannerToRobot.MultiplyPoint(target_scanner)
+    goal = self.getRobotPosition()
+    goal[1] = target[1]
+    self.sendDesiredPosition(goal)
+    return True
 
-  # Place robot at the skin entry point
+  # Insert robot by a step 
   def insertStep(self, stepSize):
     goal = self.getRobotPosition()
     goal[1] += stepSize
