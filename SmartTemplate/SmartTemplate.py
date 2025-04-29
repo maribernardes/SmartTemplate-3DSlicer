@@ -587,10 +587,13 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.joint_limits = None
     self.desired_position = None
 
+    self.mat_ZFrameToRobot = None
     self.mat_RobotToZFrame = None
     self.mat_ZFrameToScanner = None
+    self.mat_ScannerToZFrame = None
     self.mat_RobotToScanner =  None
     self.mat_ScannerToRobot =  None
+
     self.eps = 0.6
 
     # If robot node is available, make sure the /robot_state_publisher is up
@@ -819,6 +822,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       return False
     robot_description = paramNode.GetParameterAsString('robot_description')
     print('Reading robot description...')
+    print(robot_description)
     try:
       root = ET.fromstring(robot_description)
     except ET.ParseError as e:
@@ -861,14 +865,14 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       matrix_values = [list(map(float, row.split())) for row in rows]
       for i in range(3):
         matrix_values[i][3] *= 1000  # scale translations
-      mat_ZFrameToRobot = vtk.vtkMatrix4x4()
+      self.mat_ZFrameToRobot = vtk.vtkMatrix4x4()
       for i in range(4):
         for j in range(4):
-          mat_ZFrameToRobot.SetElement(i, j, matrix_values[i][j])
+          self.mat_ZFrameToRobot.SetElement(i, j, matrix_values[i][j])
       self.mat_RobotToZFrame = vtk.vtkMatrix4x4()
-      self.mat_RobotToZFrame.DeepCopy(mat_ZFrameToRobot)
-      self.mat_RobotToZFrame.Invert()
-      self.printVtkMatrix4x4(mat_ZFrameToRobot, 'ZFrameToRobot = ')
+      vtk.vtkMatrix4x4.Invert(self.mat_ZFrameToRobot, self.mat_RobotToZFrame)
+      self.printVtkMatrix4x4(self.mat_ZFrameToRobot, 'ZFrameToRobot = ')
+
       return True
     except Exception as e:
       print(f"[ERROR] Failed to parse zframe_pose: {e}")
@@ -920,13 +924,17 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       return False
     if self.mat_RobotToScanner is None:
       self.mat_RobotToScanner =  vtk.vtkMatrix4x4()
-      self.mat_ZFrameToScanner = vtk.vtkMatrix4x4()
       self.mat_ScannerToRobot =  vtk.vtkMatrix4x4()
+      self.mat_ZFrameToScanner = vtk.vtkMatrix4x4()
+      self.mat_ScannerToZFrame = vtk.vtkMatrix4x4()
+      
     ZFrameToScanner.GetMatrixTransformToWorld(self.mat_ZFrameToScanner)
+    vtk.vtkMatrix4x4.Invert(self.mat_ZFrameToScanner, self.mat_ScannerToZFrame)    
     vtk.vtkMatrix4x4.Multiply4x4(self.mat_ZFrameToScanner, self.mat_RobotToZFrame, self.mat_RobotToScanner)
     vtk.vtkMatrix4x4.Invert(self.mat_RobotToScanner, self.mat_ScannerToRobot)
-    # Update robotToScanner transform
-    self.robotToScannerTransformNode.SetMatrixTransformToParent(self.mat_RobotToScanner)   
+    self.robotToScannerTransformNode.SetMatrixTransformToParent(self.mat_RobotToScanner)  # Update robotToScanner transform
+
+
     # Publish robotToScanner to world_pose broadcaster
     # TODO: Replace by a static broadcaster once it becomes available in SlicerROS2
     world_msg = self.pubWorld.GetBlankMessage()
