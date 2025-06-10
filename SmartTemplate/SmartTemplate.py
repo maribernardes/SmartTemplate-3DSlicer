@@ -143,13 +143,13 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     planningFormLayout.addLayout(markupsLayout)
     self.planningSelector = slicer.qSlicerSimpleMarkupsWidget()    
     self.planningSelector.setMRMLScene(slicer.mrmlScene)
-    self.planningSelector.setNodeSelectorVisible(False)
+    self.planningSelector.setNodeSelectorVisible(True)
     self.planningSelector.markupsPlaceWidget().setPlaceMultipleMarkups(True)
     self.planningSelector.defaultNodeColor = qt.QColor(170,0,0)
-    self.planningSelector.setMaximumHeight(90)
+    self.planningSelector.setMaximumHeight(120)
     self.planningSelector.tableWidget().show()
     self.planningSelector.toolTip = 'Select 2 points: TARGET and ENTRY'
-    # self.planningSelector.markupsPlaceWidget().setPlaceModePersistency(True)
+    self.planningSelector.setEnterPlaceModeOnNodeChange(False)
     markupsLayout.addRow('Planned points:', self.planningSelector)
     
     # Adjust Entry button 
@@ -196,7 +196,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.toTargetButton.enabled = False
     insertionButtonsLayout.addWidget(self.toTargetButton)
 
-    self.stepButton= qt.QPushButton('Insert length')
+    self.stepButton= qt.QPushButton('Insert or Retract by =>')
     self.stepButton.toolTip = 'Insert the needle stepwise a certain lenght'
     self.stepButton.enabled = False
     insertionButtonsLayout.addWidget(self.stepButton)
@@ -267,9 +267,9 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # These connections ensure that whenever user changes some settings on the GUI, that is saved in the MRML scene
     # (in the selected parameter node).
     self.zTransformSelector.connect('currentNodeChanged(vtkMRMLNode*)', self.updateParameterNodeFromGUI)
+    self.planningSelector.connect('markupsFiducialNodeChanged()', self.updateParameterNodeFromGUI)
     self.trackTipCheckBox.connect('toggled(bool)', self.updateParameterNodeFromGUI)
     self.igtlConnectionSelector.connect('currentNodeChanged(vtkMRMLNode*)', self.updateParameterNodeFromGUI)
-    
     
     # Connect Qt widgets to event calls
     self.loadButton.connect('clicked(bool)', self.loadRobot)
@@ -281,12 +281,11 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.approachButton.connect('clicked(bool)', self.approachSkin)
     self.toTargetButton.connect('clicked(bool)', self.toTarget)
     self.stepButton.connect('clicked(bool)', self.insertStep)
+    self.planningSelector.connect('markupsFiducialNodeChanged()', self.onSelectMarkups)
     self.planningSelector.connect('updateFinished()', self.onPlanningChanged)
     
     # Initialize widget variables and updateGUI
     self.updateGUI()
-    self.planningSelector.setCurrentNode(self.logic.planningMarkupsNode)
-
 
   ### Widget functions ###################################################################
   # Called when the application closes and the module widget is destroyed.
@@ -296,7 +295,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
   # Called each time the user opens this module.
   # Make sure parameter node exists and observed
   def enter(self):
-    self.initializeParameterNode() 
+    self.initializeParameterNode()
+    self.logic.initializeInternalNodes() 
 
   # Called each time the user opens a different module.
   # Do not react to parameter node changes (GUI will be updated when the user enters into the module)
@@ -345,9 +345,9 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Make sure GUI changes do not call updateParameterNodeFromGUI (it could cause infinite loop)
     self._updatingGUIFromParameterNode = True
     # Update node selectors and input boxes and sliders
+    self.isRobotLoaded = self._parameterNode.GetParameter('RobotLoaded') == 'True'
     self.zTransformSelector.setCurrentNode(self._parameterNode.GetNodeReference('ZTransform'))
     self.planningSelector.setCurrentNode(self._parameterNode.GetNodeReference('Planning'))
-    self.isRobotLoaded = self._parameterNode.GetParameter('RobotLoaded') == 'True'
     self.trackTipCheckBox.checked = (self._parameterNode.GetParameter('TrackTip') == 'True')
     self.igtlConnectionSelector.setCurrentNode(self._parameterNode.GetNodeReference('TipIGTLServer'))
     self.updateGUI()
@@ -363,15 +363,24 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     wasModified = self._parameterNode.StartModify()  
     # Update paramenters_nodes
     self._parameterNode.SetNodeReferenceID('ZTransform', self.zTransformSelector.currentNodeID)
+    self._parameterNode.SetNodeReferenceID('Planning', self.planningSelector.currentNode().GetID())
     self._parameterNode.SetParameter('TrackTip', 'True' if self.trackTipCheckBox.checked else 'False')
     self._parameterNode.SetNodeReferenceID('TipIGTLServer', self.igtlConnectionSelector.currentNodeID)
-
     # All paramenter_nodes updates are done
     self._parameterNode.EndModify(wasModified)
-    
+
+  # Called when a MarkupsNode is selected
+  def onSelectMarkups(self):
+    planningMarkupsNode = self.planningSelector.currentNode()
+    if planningMarkupsNode:
+      planningMarkupsNode.SetRequiredNumberOfControlPoints(2)
+      displayNode = planningMarkupsNode.GetDisplayNode()
+      if displayNode:
+        displayNode.SetGlyphScale(1.5)   
+
   # Called when the Point List is updated
-  def onPlanningChanged(self):    
-    self.logic.addPlanningPoint()
+  def onPlanningChanged(self):
+    self.logic.addPlanningPoint(self.planningSelector.currentNode())
     self.updateGUI()
 
   # Called when options for tracking tip are updated
@@ -386,9 +395,10 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Check status
     robotRegistered = False if self.logic.mat_RobotToScanner is None else True
     zFrameSelected = (self.zTransformSelector.currentNode() is not None)
-    pointsSelected = (self.logic.getNumberOfPoints() == 2)
+    planningMarkupsNode = self.planningSelector.currentNode()
+    pointsSelected = (self.logic.getNumberOfPoints(planningMarkupsNode) == 2)
     if (pointsSelected and zFrameSelected and robotRegistered):
-      robotAligned = self.logic.isRobotAligned()
+      robotAligned = self.logic.isRobotAligned(planningMarkupsNode)
     else:
       robotAligned = False
     
@@ -515,8 +525,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
   def adjustEntry(self):
     print('UI: adjustEntry()')
-    # Get current transform node
-    self.logic.adjustEntry()
+    self.logic.adjustEntry(self.planningSelector.currentNode())
     print('____________________')
     self.updateGUI()
 
@@ -534,19 +543,19 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
   def alignForInsertion(self):
     print('UI: alignForInsertion()')
-    self.logic.alignForInsertion()
+    self.logic.alignForInsertion(self.planningSelector.currentNode())
     print('____________________')
     self.updateGUI()
 
   def approachSkin(self):
     print('UI: approachSkin()')
-    self.logic.approachSkin()
+    self.logic.approachSkin(self.planningSelector.currentNode())
     print('____________________')
     self.updateGUI()
 
   def toTarget(self):
     print('UI: toTarget()')
-    self.logic.toTarget()
+    self.logic.toTarget(self.planningSelector.currentNode())
     print('____________________')
     self.updateGUI()
 
@@ -603,6 +612,24 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         print('Robot missing /robot_state_publisher')
 
     # MRML Objects for robot position
+    self.initializeInternalNodes()
+    self.initializeRobotPosition()
+    self.initializeTrackedTip()
+
+
+  ### Logic functions ###################################################################
+
+  # Initialize module parameter node with default settings
+  def setDefaultParameters(self, parameterNode):
+    # self.initialize()
+    if not parameterNode.GetParameter('RobotLoaded'):
+      if self.joint_names is None:
+        isRobotLoaded = 'False'
+      else:
+        isRobotLoaded = 'True'
+      parameterNode.SetParameter('RobotLoaded', isRobotLoaded)  
+
+  def initializeInternalNodes(self):
     # Robot to Scanner Transform node
     self.robotToScannerTransformNode = slicer.util.getFirstNodeByClassByName('vtkMRMLLinearTransformNode','RobotToScannerTransform')
     if self.robotToScannerTransformNode is None:
@@ -627,7 +654,6 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       self.robotPositionMarkupsNode = slicer.vtkMRMLMarkupsFiducialNode()
       self.robotPositionMarkupsNode.SetName('RobotPosition')
       slicer.mrmlScene.AddNode(self.robotPositionMarkupsNode)
-    self.initializeRobotPosition()
     # Tracked tip (optional)
     self.needleConfidenceNode = slicer.util.getFirstNodeByClassByName('vtkMRMLTextNode','CurrentTipConfidence')
     if self.needleConfidenceNode is None:
@@ -644,36 +670,11 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       self.trackedTipMarkupsNode = slicer.vtkMRMLMarkupsFiducialNode()
       self.trackedTipMarkupsNode.SetName('TrackedTip')
       slicer.mrmlScene.AddNode(self.trackedTipMarkupsNode)
-    self.initializeTrackedTip()
-    
-    # Create Planning Markups node for planning
-    self.planningMarkupsNode = slicer.util.getFirstNodeByName('Planning', className='vtkMRMLMarkupsFiducialNode')
-    if self.planningMarkupsNode is None:
-        self.planningMarkupsNode = slicer.vtkMRMLMarkupsFiducialNode()
-        self.planningMarkupsNode.SetName('Planning')
-        slicer.mrmlScene.AddNode(self.planningMarkupsNode)
-    displayNode = self.planningMarkupsNode.GetDisplayNode()
-    if displayNode:
-      displayNode.SetGlyphScale(1.5)   
-    
+
     # Create ScriptedModule node for joint values
     self.jointValues = slicer.util.getFirstNodeByName('JointValues', className='vtkMRMLScriptedModuleNode')
     if self.jointValues is None:
       self.jointValues = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLScriptedModuleNode', 'JointValues')
-
-  ### Logic functions ###################################################################
-
-  # Initialize module parameter node with default settings
-  def setDefaultParameters(self, parameterNode):
-    # self.initialize()
-    if not parameterNode.GetParameter('RobotLoaded'):
-      if self.joint_names is None:
-        isRobotLoaded = 'False'
-      else:
-        isRobotLoaded = 'True'
-      parameterNode.SetParameter('RobotLoaded', isRobotLoaded)  
-    if not parameterNode.GetNodeReference('Planning'):
-      parameterNode.SetNodeReferenceID('Planning', self.planningMarkupsNode.GetID())
 
   def initializeRobotPosition(self):
     # Ensure there is only one control point
@@ -934,7 +935,6 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     vtk.vtkMatrix4x4.Invert(self.mat_RobotToScanner, self.mat_ScannerToRobot)
     self.robotToScannerTransformNode.SetMatrixTransformToParent(self.mat_RobotToScanner)  # Update robotToScanner transform
 
-
     # Publish robotToScanner to world_pose broadcaster
     # TODO: Replace by a static broadcaster once it becomes available in SlicerROS2
     world_msg = self.pubWorld.GetBlankMessage()
@@ -964,46 +964,48 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
   def getTipPosition(self):
     return self.getTranslation(self.trackedTipNode)
 
-  def getPlanningPoint(self, name='TARGET'):
-    idx = self.planningMarkupsNode.GetControlPointIndexByLabel(name)
-    return list(self.planningMarkupsNode.GetNthControlPointPosition(idx))
+  def getPlanningPoint(self, planningMarkupsNode, name='TARGET'):
+    if planningMarkupsNode:
+      idx = planningMarkupsNode.GetControlPointIndexByLabel(name)
+      return list(planningMarkupsNode.GetNthControlPointPosition(idx))
 
   def getTimestamp(self):
     return self.robotPositionTimestamp.GetText()
 
-  def getNumberOfPoints(self):
-    if self.planningMarkupsNode is not None:
-      return self.planningMarkupsNode.GetNumberOfDefinedControlPoints()
+  def getNumberOfPoints(self,planningMarkupsNode):
+    if planningMarkupsNode is not None:
+      return planningMarkupsNode.GetNumberOfDefinedControlPoints()
     else: 
       return 0
   
-  def addPlanningPoint(self):
-    if self.planningMarkupsNode is not None:
-      N = self.planningMarkupsNode.GetNumberOfControlPoints()
+  def addPlanningPoint(self, planningMarkupsNode):
+    if planningMarkupsNode is not None:
+      if (planningMarkupsNode == self.robotPositionMarkupsNode) or (planningMarkupsNode == self.trackedTipMarkupsNode):
+        print('Invalid point list')
+        return
+      N = planningMarkupsNode.GetNumberOfControlPoints()
       if N>=1:
-        self.planningMarkupsNode.SetNthControlPointLabel(0, 'TARGET')
+        planningMarkupsNode.SetNthControlPointLabel(0, 'TARGET')
       if N>=2:
-        self.planningMarkupsNode.SetNthControlPointLabel(1, 'ENTRY')
-      if self.planningMarkupsNode.GetNumberOfDefinedControlPoints()>=2:
-        self.planningMarkupsNode.SetFixedNumberOfControlPoints(2)
+        planningMarkupsNode.SetNthControlPointLabel(1, 'ENTRY')
 
   # Place robot at the skin entry point
-  def alignForInsertion(self):
-    entry_scanner = [*self.getPlanningPoint('ENTRY'), 1.0]       # Get entry point in scanner coordinates
+  def alignForInsertion(self, planningMarkupsNode):
+    entry_scanner = [*self.getPlanningPoint(planningMarkupsNode, 'ENTRY'), 1.0]       # Get entry point in scanner coordinates
     entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner) # Convert to robot coordinates
     desired_position = [entry[0], 0.0, entry[2]]
     self.sendDesiredPosition(desired_position)
     return True
     
   # Place robot at the skin entry point
-  def approachSkin(self):
-    entry_scanner = [*self.getPlanningPoint('ENTRY'), 1.0]        # Get entry point in scanner coordinates
+  def approachSkin(self, planningMarkupsNode):
+    entry_scanner = [*self.getPlanningPoint(planningMarkupsNode, 'ENTRY'), 1.0]        # Get entry point in scanner coordinates
     entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)  # Convert to robot coordinates
     self.sendDesiredPosition([entry[0], entry[1], entry[2]])
     return True
 
-  def isRobotAligned(self):
-    entry_scanner = [*self.getPlanningPoint('ENTRY'), 1.0] 
+  def isRobotAligned(self, planningMarkupsNode):
+    entry_scanner = [*self.getPlanningPoint(planningMarkupsNode, 'ENTRY'), 1.0] 
     entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)  # Convert to robot coordinates
     robot = self.getRobotPosition()
     if (abs(robot[0] - entry[0]) <= self.eps) and (abs(robot[2] - entry[2]) <= self.eps):
@@ -1025,8 +1027,8 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       return False
     '''
   # Insert robot to target depth
-  def toTarget(self):
-    target_scanner = [*self.getPlanningPoint('TARGET'), 1.0]
+  def toTarget(self, planningMarkupsNode):
+    target_scanner = [*self.getPlanningPoint(planningMarkupsNode,'TARGET'), 1.0]
     target = self.mat_ScannerToRobot.MultiplyPoint(target_scanner)
     goal = self.getRobotPosition()
     goal[1] = target[1]
@@ -1040,10 +1042,10 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.sendDesiredPosition(goal)
     return True
     
-  def adjustEntry(self):
+  def adjustEntry(self, planningMarkupsNode):
     # Get Points in scanner coordinates
-    entry_scanner = [*self.getPlanningPoint('ENTRY'), 1.0]
-    target_scanner = [*self.getPlanningPoint('TARGET'), 1.0]
+    entry_scanner = [*self.getPlanningPoint(planningMarkupsNode,'ENTRY'), 1.0]
+    target_scanner = [*self.getPlanningPoint(planningMarkupsNode,'TARGET'), 1.0]
     # Calculate Points in robot coordinates
     target = self.mat_ScannerToRobot.MultiplyPoint(target_scanner)
     entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)
@@ -1051,7 +1053,8 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     entry = [target[0], entry[1], target[2], 1.0]
     # Update entry scanner in markups list (to align with target)
     entry_scanner = self.mat_RobotToScanner.MultiplyPoint(entry)
-    self.planningMarkupsNode.SetNthControlPointPosition(self.planningMarkupsNode.GetControlPointIndexByLabel('ENTRY'), entry_scanner[:3])
+    planningMarkupsNode.SetNthControlPointPosition(planningMarkupsNode.GetControlPointIndexByLabel('ENTRY'), entry_scanner[:3])
+    planningMarkupsNode.SetLocked(True)
     return True
 
   def sendPlanning(self, entry, target):
