@@ -187,9 +187,34 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     insertionCollapsibleButton = ctk.ctkCollapsibleButton()
     insertionCollapsibleButton.text = 'Insertion'    
     self.layout.addWidget(insertionCollapsibleButton)
+
     insertionFormLayout = qt.QFormLayout(insertionCollapsibleButton)
 
+    # Track needle tip using OpenIGTLink connection
+    trackTipLayout = qt.QHBoxLayout()
+    self.igtlConnectionSelector = slicer.qMRMLNodeComboBox()
+    self.igtlConnectionSelector.nodeTypes = ['vtkMRMLIGTLConnectorNode']
+    self.igtlConnectionSelector.selectNodeUponCreation = True
+    self.igtlConnectionSelector.addEnabled = False
+    self.igtlConnectionSelector.removeEnabled = False
+    self.igtlConnectionSelector.noneEnabled = True
+    self.igtlConnectionSelector.showHidden = False
+    self.igtlConnectionSelector.showChildNodeTypes = False
+    self.igtlConnectionSelector.setMRMLScene(slicer.mrmlScene)
+    self.igtlConnectionSelector.setToolTip('Select OpenIGTLink server')
+    self.igtlConnectionSelector.enabled = True
+    self.igtlConnectionSelector.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Preferred)
+    trackTipLayout.addWidget(qt.QLabel('IGTLServer Tip:'))
+    trackTipLayout.addWidget(self.igtlConnectionSelector, 1)
+    self.recordInsertionButton = qt.QPushButton("Record Insertion")
+    self.recordInsertionButton.toolTip = "Record tip positions during insertion"
+    self.recordInsertionButton.enabled = False
+    trackTipLayout.addWidget(self.recordInsertionButton)
+
+    insertionFormLayout.addRow(trackTipLayout)
+
     insertionFormLayout.addRow('', qt.QLabel(''))  # Vertical space
+    
     insertionButtonsLayout = qt.QHBoxLayout()
     self.toTargetButton= qt.QPushButton('Insert to target')
     self.toTargetButton.toolTip = 'Insert the needle to target'
@@ -208,32 +233,6 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     insertionButtonsLayout.addWidget(qt.QLabel('mm'))
     insertionFormLayout.addRow(insertionButtonsLayout)
 
-    # Push tip coordinates to robot
-    trackTipLayout = qt.QHBoxLayout()
-    self.trackTipCheckBox = qt.QCheckBox()
-    self.trackTipCheckBox.checked = False
-    self.trackTipCheckBox.setToolTip('If checked, tracks current tip position in scanner coordinates')
-    trackTipLayout.addWidget(qt.QLabel('Track Tip'))
-    trackTipLayout.addWidget(self.trackTipCheckBox) 
-    trackTipLayout.addItem(qt.QSpacerItem(10, 0, qt.QSizePolicy.Fixed, qt.QSizePolicy.Minimum))
-
-    # Select Robot OpenIGTLink connection
-    self.igtlConnectionSelector = slicer.qMRMLNodeComboBox()
-    self.igtlConnectionSelector.nodeTypes = ['vtkMRMLIGTLConnectorNode']
-    self.igtlConnectionSelector.selectNodeUponCreation = True
-    self.igtlConnectionSelector.addEnabled = False
-    self.igtlConnectionSelector.removeEnabled = False
-    self.igtlConnectionSelector.noneEnabled = True
-    self.igtlConnectionSelector.showHidden = False
-    self.igtlConnectionSelector.showChildNodeTypes = False
-    self.igtlConnectionSelector.setMRMLScene(slicer.mrmlScene)
-    self.igtlConnectionSelector.setToolTip('Select OpenIGTLink server')
-    self.igtlConnectionSelector.enabled = False
-    self.igtlConnectionSelector.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Preferred)
-    trackTipLayout.addWidget(qt.QLabel('IGTLServer Tip:'))
-    trackTipLayout.addWidget(self.igtlConnectionSelector, 1)
-    insertionFormLayout.addRow(trackTipLayout)
-
     self.layout.addStretch(1)
     
     ####################################
@@ -247,7 +246,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.jointNames = None
     self.jointLimits = None
     self.jointValues = None
-    
+   
     # Initialize module logic
     self.logic = SmartTemplateLogic()
 
@@ -268,7 +267,6 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # (in the selected parameter node).
     self.zTransformSelector.connect('currentNodeChanged(vtkMRMLNode*)', self.updateParameterNodeFromGUI)
     self.planningSelector.connect('markupsFiducialNodeChanged()', self.updateParameterNodeFromGUI)
-    self.trackTipCheckBox.connect('toggled(bool)', self.updateParameterNodeFromGUI)
     self.igtlConnectionSelector.connect('currentNodeChanged(vtkMRMLNode*)', self.updateParameterNodeFromGUI)
     
     # Connect Qt widgets to event calls
@@ -283,6 +281,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.stepButton.connect('clicked(bool)', self.insertStep)
     self.planningSelector.connect('markupsFiducialNodeChanged()', self.onSelectMarkups)
     self.planningSelector.connect('updateFinished()', self.onPlanningChanged)
+    self.recordInsertionButton.connect('clicked(bool)', self.onRecordInsertion)
+
     
     # Initialize widget variables and updateGUI
     self.updateGUI()
@@ -348,7 +348,6 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.isRobotLoaded = self._parameterNode.GetParameter('RobotLoaded') == 'True'
     self.zTransformSelector.setCurrentNode(self._parameterNode.GetNodeReference('ZTransform'))
     self.planningSelector.setCurrentNode(self._parameterNode.GetNodeReference('Planning'))
-    self.trackTipCheckBox.checked = (self._parameterNode.GetParameter('TrackTip') == 'True')
     self.igtlConnectionSelector.setCurrentNode(self._parameterNode.GetNodeReference('TipIGTLServer'))
     self.updateGUI()
     # All the GUI updates are done
@@ -363,8 +362,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     wasModified = self._parameterNode.StartModify()  
     # Update paramenters_nodes
     self._parameterNode.SetNodeReferenceID('ZTransform', self.zTransformSelector.currentNodeID)
-    self._parameterNode.SetNodeReferenceID('Planning', self.planningSelector.currentNode().GetID())
-    self._parameterNode.SetParameter('TrackTip', 'True' if self.trackTipCheckBox.checked else 'False')
+    planningMarkupsNode = self.planningSelector.currentNode()
+    self._parameterNode.SetNodeReferenceID('Planning', planningMarkupsNode.GetID() if planningMarkupsNode else None)
     self._parameterNode.SetNodeReferenceID('TipIGTLServer', self.igtlConnectionSelector.currentNodeID)
     # All paramenter_nodes updates are done
     self._parameterNode.EndModify(wasModified)
@@ -382,13 +381,6 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
   def onPlanningChanged(self):
     self.logic.addPlanningPoint(self.planningSelector.currentNode())
     self.updateGUI()
-
-  # Called when options for tracking tip are updated
-  def isTrackTipSelected(self, caller=None, event=None):
-    if (self.trackTipCheckBox.checked is False) or (self.igtlConnectionSelector.currentNode() is None):
-      return False
-    else:
-      return True
 
   # Update GUI buttons, markupWidget and connection statusLabel
   def updateGUI(self):
@@ -412,7 +404,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.toTargetButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
     self.alignButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
     self.approachButton.enabled = robotAligned and pointsSelected and robotRegistered and self.isRobotLoaded
-    self.igtlConnectionSelector.enabled = self.trackTipCheckBox.checked
+    self.recordInsertionButton.enabled = (self.igtlConnectionSelector.currentNode() is not None)
+
     # Add joints if not already added:
     if self.jointNames is None and self.isRobotLoaded:
       self.addJoints()
@@ -492,23 +485,33 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
   # Update text boxes with current position values
   def onPositionChange(self, caller=None, event=None):
-    robotPositionXYZ = self.logic.getRobotPosition()
+    robotPositionXYZ, robotTimeStamp = self.logic.getRobotPosition()
     #print('Time: %s / Tip (RAS): %s' %(timestamp,tipCoordinates))
     if robotPositionXYZ is not None:
       self.positionRobotTextbox.setText(self.format3DPoint(robotPositionXYZ, 'XYZ'))
     else:
       self.positionRobotTextbox.setText('(---, ---, ---)')
-    robotPositionRAS = self.logic.getRobotPosition('world')
+    robotPositionRAS, _ = self.logic.getRobotPosition('world')
     if robotPositionRAS is not None:
       self.positionRASTextbox.setText(self.format3DPoint(robotPositionRAS, 'RAS'))
     else:
       self.positionRASTextbox.setText('(---, ---, ---)')
-    self.timeStampTextbox.setText(self.logic.getTimestamp())
+    self.timeStampTextbox.setText(robotTimeStamp)
     self.updateGUI()
 
   # Synch experiment data when new tracked tip is received
   def onTrackedTipChange(self, caller=None, event=None):
     self.logic.updateTrackedTip()
+
+  # On/Off Insertion Recording
+  def onRecordInsertion(self):
+    if not self.logic.loggingActive:
+        self.logic.startLogging()
+        self.recordInsertionButton.setText("Stop && Save Insertion")
+    else:
+        self.logic.stopAndSaveLogging(self.planningSelector.currentNode())
+        self.recordInsertionButton.setText("Record Insertion")
+
 
   def loadRobot(self):
     print('UI: loadRobot()')
@@ -563,7 +566,9 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     print('UI: insertStep()')
     self.logic.insertStep(float(self.stepSizeTextbox.text.strip()))
     print('____________________')
-    self.updateGUI()    
+    self.updateGUI()   
+
+
 ################################################################################################################################################
 # Logic Class
 ################################################################################################################################################
@@ -603,6 +608,13 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.mat_RobotToScanner =  None
     self.mat_ScannerToRobot =  None
 
+    self.loggingActive = False
+    self.loggedRobotPositions = []    # Stored robot position (RAS) at tip receipt time
+    self.loggedRobotTimestamps = []   # When robot position was stored
+    self.loggedTipPositions = []      # Tip position
+    self.loggedTipTimestamps = []     # From tip message header (other computer timestamp)
+    self.loggedLogTimestamps = []     # When tip was received 
+
     self.eps = 0.6
 
     # If robot node is available, make sure the /robot_state_publisher is up
@@ -638,11 +650,11 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         self.robotToScannerTransformNode.SetHideFromEditors(True)
         slicer.mrmlScene.AddNode(self.robotToScannerTransformNode)
     # Robot position message header
-    self.robotPositionTimestamp = slicer.util.getFirstNodeByName('RobotPositionTimestamp', className='vtkMRMLTextNode')
-    if self.robotPositionTimestamp is None:
-      self.robotPositionTimestamp = slicer.vtkMRMLTextNode()
-      self.robotPositionTimestamp.SetName('RobotPositionTimestamp')
-      slicer.mrmlScene.AddNode(self.robotPositionTimestamp)
+    self.robotPositionTimestampNode = slicer.util.getFirstNodeByName('RobotPositionTimestamp', className='vtkMRMLTextNode')
+    if self.robotPositionTimestampNode is None:
+      self.robotPositionTimestampNode = slicer.vtkMRMLTextNode()
+      self.robotPositionTimestampNode.SetName('RobotPositionTimestamp')
+      slicer.mrmlScene.AddNode(self.robotPositionTimestampNode)
     self.robotPositionNode = slicer.util.getFirstNodeByClassByName('vtkMRMLLinearTransformNode','RobotPositionTransform')
     if self.robotPositionNode is None:
         self.robotPositionNode = slicer.vtkMRMLLinearTransformNode()
@@ -768,8 +780,8 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     # Update timestamp string node
     stamp = position_msg.GetHeader().GetStamp()
     timestamp = self.formatTimestampToLocalTimeText(stamp.GetSec(), stamp.GetNanosec())
-    self.robotPositionTimestamp.SetText(timestamp)
-    self.robotPositionTimestamp.Modified()
+    self.robotPositionTimestampNode.SetText(timestamp)
+    self.robotPositionTimestampNode.Modified()
     # Update robot position node
     point =  position_msg.GetPoint()
     robotPositionMatrix = vtk.vtkMatrix4x4()
@@ -959,7 +971,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     return [tx, ty, tz]
 
   def getRobotPosition(self, frame=None):
-    return self.getTranslation(self.robotPositionNode, frame=frame)
+    return (self.getTranslation(self.robotPositionNode, frame=frame), self.robotPositionTimestampNode.GetText())
 
   def getTipPosition(self):
     return self.getTranslation(self.trackedTipNode)
@@ -968,9 +980,6 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     if planningMarkupsNode:
       idx = planningMarkupsNode.GetControlPointIndexByLabel(name)
       return list(planningMarkupsNode.GetNthControlPointPosition(idx))
-
-  def getTimestamp(self):
-    return self.robotPositionTimestamp.GetText()
 
   def getNumberOfPoints(self,planningMarkupsNode):
     if planningMarkupsNode is not None:
@@ -1007,37 +1016,24 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
   def isRobotAligned(self, planningMarkupsNode):
     entry_scanner = [*self.getPlanningPoint(planningMarkupsNode, 'ENTRY'), 1.0] 
     entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)  # Convert to robot coordinates
-    robot = self.getRobotPosition()
+    robot, _ = self.getRobotPosition()
     if (abs(robot[0] - entry[0]) <= self.eps) and (abs(robot[2] - entry[2]) <= self.eps):
       return True
     else:
       return False
 
-  def isEntryAligned(self):
-    #TODO: Not used
-    '''
-    entry_scanner = [*self.getPlanningPoint('ENTRY'), 1.0]          # Get entry point in scanner coordinates
-    entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)    # Convert to robot coordinates
-    target_scanner = [*self.getPlanningPoint('TARGET'), 1.0]        # Get target point in scanner coordinates
-    target = self.mat_ScannerToRobot.MultiplyPoint(target_scanner)  # Convert to robot coordinates
-    aligned_entry = [target[0], entry[1], target[2], 1.0]           # Align entry with target (in robot coordinates)
-    if entry == aligned_entry:
-      return True
-    else:
-      return False
-    '''
   # Insert robot to target depth
   def toTarget(self, planningMarkupsNode):
     target_scanner = [*self.getPlanningPoint(planningMarkupsNode,'TARGET'), 1.0]
     target = self.mat_ScannerToRobot.MultiplyPoint(target_scanner)
-    goal = self.getRobotPosition()
+    goal, _ = self.getRobotPosition()
     goal[1] = target[1]
     self.sendDesiredPosition(goal)
     return True
 
   # Insert robot by a step 
   def insertStep(self, stepSize):
-    goal = self.getRobotPosition()
+    goal, _ = self.getRobotPosition()
     goal[1] += stepSize
     self.sendDesiredPosition(goal)
     return True
@@ -1088,22 +1084,67 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.pubCommand.Publish(command)
   
   def updateTrackedTip(self):
+    # Message incoming
+    timestamp = time.time()
+    dt = datetime.datetime.fromtimestamp(timestamp)
+    logTimestamp = dt.strftime('%H:%M:%S.%f')[:-3]
     # Extract confidence 
     msg_text = self.needleConfidenceNode.GetText()
     parts = msg_text.split(';') # Split by ';'
-    tipTimestamp = float(parts[0].strip())
     tipConfidence = parts[1].strip()
     confidenceValue = int(parts[2].strip())
+    # Extract timestamp (from AITracking)
+    timestamp = float(parts[0].strip())
+    dt = datetime.datetime.fromtimestamp(timestamp)
+    tipTimestamp = dt.strftime('%H:%M:%S.%f')[:-3]
+
     # Extract position
     tipPosition = self.getTipPosition()
     tipTracked = (confidenceValue >= 3)
     self.setTipMarkupColor(tipTracked)
-    robotRAS = self.getRobotPosition('world')
-    robotXYZ = self.getRobotPosition()
-    print('Timestamp: %s' %(time.perf_counter()))
+    robotRAS, robotTimestamp = self.getRobotPosition('world')
+    robotXYZ, _ = self.getRobotPosition()
+    
+    # Update log
+    if tipTracked and self.loggingActive:
+      self.loggedRobotPositions.append(robotRAS)
+      self.loggedRobotTimestamps.append(robotTimestamp)  
+      self.loggedTipPositions.append(tipPosition)
+      self.loggedTipTimestamps.append(tipTimestamp)    
+      self.loggedLogTimestamps.append(logTimestamp)  
+    print('Log Timestamp: %s' %(logTimestamp))
     if tipTracked:
-      print('Tip = [%.4f, %.4f, %.4f] RAS, Confidence = %s, Timestamp = %s' % (tipPosition[0], tipPosition[1], tipPosition[2], tipConfidence, str(tipTimestamp)))
+      print('Tip = [%.4f, %.4f, %.4f] RAS, Confidence = %s, Tip Timestamp = %s' % (tipPosition[0], tipPosition[1], tipPosition[2], tipConfidence, tipTimestamp))
     else:
-      print('Tip not tracked, Confidence = %s, Timestamp = %s' % (tipConfidence, str(tipTimestamp)))
+      print('Tip not tracked, Confidence = %s, Tip Timestamp = %s' % (tipConfidence, tipTimestamp))
     print('Robot = [%.4f, %.4f, %.4f] RAS, [%.4f, %.4f, %.4f] XYZ' % (robotRAS[0], robotRAS[1], robotRAS[2], robotXYZ[0], robotXYZ[1], robotXYZ[2]))
     print('____________________')
+
+  def startLogging(self):
+      self.loggingActive = True
+      self.loggedRobotPositions = []    # Stored robot position (RAS) at tip receipt time
+      self.loggedRobotTimestamps = []   # When robot position was stored
+      self.loggedTipPositions = []      # Tip position
+      self.loggedTipTimestamps = []     # From tip message header (other computer timestamp)
+      self.loggedLogTimestamps = []     # When tip was received 
+
+  def stopAndSaveLogging(self, planningNode):
+      self.loggingActive = False
+      # Extract insertion number from planning node name
+      name = planningNode.GetName()
+      insertion_number = ''.join(filter(str.isdigit, name))
+      node_name = f'Insertion_{insertion_number}'
+
+      # Save to CSV
+      file_path = os.path.join(slicer.app.temporaryPath, f"{node_name}.csv")
+      with open(file_path, 'w') as f:
+          f.write("log_timestamp,tip_timestamp,tip_R,tip_A,tip_S,robot_timestamp_robot_R,robot_A,robot_S t\n")
+          for ts_log, ts_tip, pos_tip, ts_robot, pos_robot  in zip(self.loggedLogTimestamps, self.loggedTipTimestamps, self.loggedTipPositions, self.loggedRobotTimestamps, self.loggedRobotPositions):
+              f.write(f"{ts_log},{ts_tip},{pos_tip[0]:.3f},{pos_tip[1]:.3f},{pos_tip[2]:.3f},{ts_robot},{pos_robot[0]:.3f},{pos_robot[1]:.3f},{pos_robot[2]:.3f}\n")
+      print(f"Saved insertion to: {file_path}")
+
+      # Add to Markups Node
+      node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsFiducialNode", node_name)
+      for pos in self.loggedTipPositions:
+          node.AddControlPoint(vtk.vtkVector3d(*pos), "")
+      node.CreateDefaultDisplayNodes()
