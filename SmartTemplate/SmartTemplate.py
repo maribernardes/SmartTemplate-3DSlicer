@@ -93,6 +93,12 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.registerButton.toolTip = 'Registers robot to scanner'
     self.registerButton.enabled = False
     registrationLayout.addWidget(self.registerButton)
+    
+    # Correct calibration button 
+    self.correctCalibrationButton = qt.QPushButton('Correct calibration')
+    self.correctCalibrationButton.toolTip = 'Correct robot insertion joint calibration'
+    self.correctCalibrationButton.enabled = False
+    registrationLayout.addWidget(self.correctCalibrationButton)
     robotFormLayout.addRow(registrationLayout)
 
     jointsContainer = qt.QWidget()
@@ -243,6 +249,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     # Internal variables
     self.isRobotLoaded = False  # Is the robot loaded?
+    self.isTipTracked = False   # Is the needle tip tracked?
     self.jointNames = None
     self.jointLimits = None
     self.jointValues = None
@@ -260,7 +267,6 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # These connections ensure that we synch robot info with the logic
     self.addObserver(self.logic.jointValues, vtk.vtkCommand.ModifiedEvent, self.onJointsChange)
     self.addObserver(self.logic.robotPositionNode, vtk.vtkCommand.ModifiedEvent, self.onPositionChange)
-    #self.addObserver(self.logic.needleConfidenceNode, slicer.vtkMRMLTextNode.TextModifiedEvent, self.onTrackedTipChange)
     self.addObserver(self.logic.trackedTipNode, slicer.vtkMRMLTransformNode.TransformModifiedEvent, self.onTrackedTipChange)
 
     # These connections ensure that whenever user changes some settings on the GUI, that is saved in the MRML scene
@@ -272,6 +278,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Connect Qt widgets to event calls
     self.loadButton.connect('clicked(bool)', self.loadRobot)
     self.registerButton.connect('clicked(bool)', self.registerRobot)
+    self.correctCalibrationButton.connect('clicked(bool)', self.correctCalibration)
     self.adjustEntryButton.connect('clicked(bool)', self.adjustEntry)
     self.retractButton.connect('clicked(bool)', self.retractNeedle)
     self.homeButton.connect('clicked(bool)', self.homeRobot)
@@ -346,6 +353,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self._updatingGUIFromParameterNode = True
     # Update node selectors and input boxes and sliders
     self.isRobotLoaded = self._parameterNode.GetParameter('RobotLoaded') == 'True'
+    self.isTipTracked = self._parameterNode.GetParameter('TipTracked') == 'True'
     self.zTransformSelector.setCurrentNode(self._parameterNode.GetNodeReference('ZTransform'))
     self.planningSelector.setCurrentNode(self._parameterNode.GetNodeReference('Planning'))
     self.igtlConnectionSelector.setCurrentNode(self._parameterNode.GetNodeReference('TipIGTLServer'))
@@ -397,6 +405,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Update buttons accordingly
     self.loadButton.enabled = not self.isRobotLoaded
     self.registerButton.enabled = zFrameSelected and self.isRobotLoaded
+    self.correctCalibrationButton.enabled = robotRegistered and self.isRobotLoaded and self.isTipTracked
     self.adjustEntryButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
     self.homeButton.enabled = self.isRobotLoaded
     self.retractButton.enabled = self.isRobotLoaded
@@ -502,8 +511,9 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
   # Synch experiment data when new tracked tip is received
   def onTrackedTipChange(self, caller=None, event=None):
     self.logic.updateTrackedTip()
+    self.isTipTracked = True
 
-  # On/Off Insertion Recording
+
   def onRecordInsertion(self):
     if not self.logic.loggingActive:
         self.logic.startLogging()
@@ -525,6 +535,14 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.logic.registerRobot(zTransformNode)
     print('____________________')
     self.updateGUI()
+
+  def correctCalibration(self):
+    print('UI: correctCalibration()')
+    zTransformNode = self.zTransformSelector.currentNode()
+    self.logic.correctCalibration(zTransformNode)
+    print('____________________')
+    self.updateGUI()
+
 
   def adjustEntry(self):
     print('UI: adjustEntry()')
@@ -640,6 +658,8 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       else:
         isRobotLoaded = 'True'
       parameterNode.SetParameter('RobotLoaded', isRobotLoaded)  
+    if not parameterNode.GetParameter('TipTracked'):
+      parameterNode.SetParameter('TipTracked', 'False')  
 
   def initializeInternalNodes(self):
     # Robot to Scanner Transform node
@@ -958,6 +978,46 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     displayNode.SetVisibility(True)
     return True
   
+  # Correct calibration error
+  def correctCalibration(self, ZFrameToScanner):
+    if self.robotNode is None:
+      print('Initialize robot first')
+      return False
+    elif self.mat_RobotToScanner is None:
+      print('Register robot first')
+      return False
+    # Calculate error in depth
+    robotPosition, _ = self.getRobotPosition('world')
+    tipPosition = self.getTipPosition()
+    insertion_axis_robot = [0.0, 1.0, 0.0, 0.0]     # Insertion axis in robot frame (Y axis) homogeneous vector (w=0)
+    insertion_axis_scanner = [0.0, 0.0, 0.0, 0.0]   # Initialize insertion axis in scanner frame
+    self.mat_RobotToScanner.MultiplyPoint(insertion_axis_robot, insertion_axis_scanner) # Calculate insertion axis in scanner frame
+    axis = insertion_axis_scanner[:3] # Remove w component
+    vtk.vtkMath.Normalize(axis)       # Normalize axis vector
+    diff = [0.0, 0.0, 0.0]
+    vtk.vtkMath.Subtract(tipPosition, robotPosition, diff) # Calculate difference
+    insertion_error = vtk.vtkMath.Dot(diff, axis) # Project onto insertion axis
+    # Compute offset = insertion_error * axis
+    offset = [component * insertion_error for component in axis]
+    originalMatrix = vtk.vtkMatrix4x4()
+    ZFrameToScanner.GetMatrixTransformToParent(originalMatrix)
+    # Create copy of the original registration node
+    transformCopy = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLinearTransformNode")
+    newName = f"{ZFrameToScanner.GetName()}_ORIGINAL"
+    transformCopy.SetName(newName)
+    transformCopy.SetMatrixTransformToParent(originalMatrix)
+    print(f"Created copy of '{ZFrameToScanner.GetName()}' as '{newName}'")
+    # Update translation part of ZFrameToScanner
+    updatedMatrix = vtk.vtkMatrix4x4()
+    updatedMatrix.DeepCopy(originalMatrix)
+    for i in range(3):
+        updatedMatrix.SetElement(i, 3, originalMatrix.GetElement(i, 3) + offset[i])
+    ZFrameToScanner.SetMatrixTransformToParent(updatedMatrix)
+    ZFrameToScanner.Modified()
+    print(f"Updated registration '{ZFrameToScanner.GetName()}' by {insertion_error:.2f} mm along insertion axis.")
+    self.registerRobot(ZFrameToScanner)
+    return True
+
   def getTranslation(self, linearTransformNode, frame=None):
     matrix = vtk.vtkMatrix4x4()
     if frame == 'world':
@@ -1104,6 +1164,10 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.setTipMarkupColor(tipTracked)
     robotRAS, robotTimestamp = self.getRobotPosition('world')
     robotXYZ, _ = self.getRobotPosition()
+    
+    if tipTracked:
+      moduleParameterNode = self.getParameterNode()     # Update module parameter to help synch logic and gui
+      moduleParameterNode.SetParameter('TipTracked', 'True')
     
     # Update log
     if tipTracked and self.loggingActive:
