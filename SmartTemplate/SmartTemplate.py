@@ -511,8 +511,6 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
   # Synch experiment data when new tracked tip is received
   def onTrackedTipChange(self, caller=None, event=None):
     self.logic.updateTrackedTip()
-    self.isTipTracked = True
-
 
   def onRecordInsertion(self):
     if not self.logic.loggingActive:
