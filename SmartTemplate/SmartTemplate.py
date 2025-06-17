@@ -537,8 +537,10 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
   def correctCalibration(self):
     print('UI: correctCalibration()')
     zTransformNode = self.zTransformSelector.currentNode()
-    self.logic.correctCalibration(zTransformNode)
+    newZTransformNode = self.logic.correctCalibration(zTransformNode)
+    self.zTransformSelector.setCurrentNode(newZTransformNode)
     print('____________________')
+    print(newZTransformNode.GetName())
     self.updateGUI()
 
 
@@ -752,6 +754,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         self.trackedTipMarkupsNode.GetDisplayNode().SetGlyphScale(1.5)
         self.setTipMarkupColor(None)
     self.trackedTipMarkupsNode.SetAndObserveTransformNodeID(self.trackedTipNode.GetID())
+    self.getParameterNode().SetParameter('TipTracked', 'False')
 
   # Set TipMarkup Color according to tracking status
   def setTipMarkupColor(self, tipTracked:bool = None):
@@ -980,10 +983,10 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
   def correctCalibration(self, ZFrameToScanner):
     if self.robotNode is None:
       print('Initialize robot first')
-      return False
+      return None
     elif self.mat_RobotToScanner is None:
       print('Register robot first')
-      return False
+      return None
     # Calculate error in depth
     robotPosition, _ = self.getRobotPosition('world')
     tipPosition = self.getTipPosition()
@@ -1000,21 +1003,21 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     originalMatrix = vtk.vtkMatrix4x4()
     ZFrameToScanner.GetMatrixTransformToParent(originalMatrix)
     # Create copy of the original registration node
-    transformCopy = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLinearTransformNode")
-    newName = f"{ZFrameToScanner.GetName()}_ORIGINAL"
-    transformCopy.SetName(newName)
-    transformCopy.SetMatrixTransformToParent(originalMatrix)
+    newZFrameToScanner = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLinearTransformNode")
+    newName = self.getUniqueNodeName(ZFrameToScanner.GetName() + "_CORRECTED")
+    newZFrameToScanner.SetName(newName)
+    newZFrameToScanner.SetMatrixTransformToParent(originalMatrix)
     print(f"Created copy of '{ZFrameToScanner.GetName()}' as '{newName}'")
     # Update translation part of ZFrameToScanner
     updatedMatrix = vtk.vtkMatrix4x4()
     updatedMatrix.DeepCopy(originalMatrix)
     for i in range(3):
         updatedMatrix.SetElement(i, 3, originalMatrix.GetElement(i, 3) + offset[i])
-    ZFrameToScanner.SetMatrixTransformToParent(updatedMatrix)
-    ZFrameToScanner.Modified()
-    print(f"Updated registration '{ZFrameToScanner.GetName()}' by {insertion_error:.2f} mm along insertion axis.")
-    self.registerRobot(ZFrameToScanner)
-    return True
+    newZFrameToScanner.SetMatrixTransformToParent(updatedMatrix)
+    newZFrameToScanner.Modified()
+    print(f"Updated registration '{newZFrameToScanner.GetName()}' by {insertion_error:.2f} mm along insertion axis.")
+    self.registerRobot(newZFrameToScanner)
+    return newZFrameToScanner
 
   def getTranslation(self, linearTransformNode, frame=None):
     matrix = vtk.vtkMatrix4x4()
@@ -1055,6 +1058,16 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         planningMarkupsNode.SetNthControlPointLabel(0, 'TARGET')
       if N>=2:
         planningMarkupsNode.SetNthControlPointLabel(1, 'ENTRY')
+
+  def getUniqueNodeName(self, baseName, nodeClass="vtkMRMLLinearTransformNode"):
+    if slicer.util.getFirstNodeByClassByName(nodeClass, baseName) is None:
+      return baseName
+    index = 1
+    while True:
+      candidateName = f"{baseName}_{index}"
+      if slicer.util.getFirstNodeByClassByName(nodeClass, candidateName) is None:
+        return candidateName
+      index += 1
 
   # Place robot at the skin entry point
   def alignForInsertion(self, planningMarkupsNode):
