@@ -61,17 +61,12 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     ## Robot collapsible button            
     ####################################
     robotCollapsibleButton = ctk.ctkCollapsibleButton()
-    robotCollapsibleButton.text = 'Robot'
+    robotCollapsibleButton.text = 'SmartTemplate Robot'
     self.layout.addWidget(robotCollapsibleButton)
 
     # Load robot button
     robotFormLayout = qt.QFormLayout(robotCollapsibleButton)
-    robotFormLayout.addRow('', qt.QLabel(''))  # Vertical space
-    self.loadButton = qt.QPushButton('Load SmartTemplate')
-    self.loadButton.toolTip = 'Loads robot in 3DSlicer'
-    self.loadButton.enabled = True
-    robotFormLayout.addRow(self.loadButton)
-
+    
     # ZTransform matrix
     registrationLayout = qt.QHBoxLayout()
     self.zTransformSelector = slicer.qMRMLNodeComboBox()
@@ -87,54 +82,85 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     ZTransformLabel = qt.QLabel('ZTransform:')
     registrationLayout.addWidget(ZTransformLabel)
     registrationLayout.addWidget(self.zTransformSelector)
-    
-    # Register robot button 
-    self.registerButton = qt.QPushButton('Register SmartTemplate')
-    self.registerButton.toolTip = 'Registers robot to scanner'
-    self.registerButton.enabled = False
-    registrationLayout.addWidget(self.registerButton)
-    
-    # Correct calibration button 
-    self.correctCalibrationButton = qt.QPushButton('Correct calibration')
-    self.correctCalibrationButton.toolTip = 'Correct robot insertion joint calibration'
-    self.correctCalibrationButton.enabled = False
-    registrationLayout.addWidget(self.correctCalibrationButton)
     robotFormLayout.addRow(registrationLayout)
 
-    jointsContainer = qt.QWidget()
-    jointsContainer.setMinimumHeight(200)  # Set minimum height for the container
-    # Robot joints
-    self.jointsLayout = qt.QVBoxLayout(jointsContainer)
-    robotFormLayout.addWidget(jointsContainer)
+    # Load, Register and Correct Calibration buttons
+    initButtonLayout = qt.QHBoxLayout()
+    self.loadButton = qt.QPushButton('Load')
+    self.loadButton.setFixedWidth(150)
+    self.loadButton.toolTip = 'Loads SmartTemplate robot in 3DSlicer'
+    self.loadButton.enabled = True    
+    self.registerButton = qt.QPushButton('Register')
+    self.registerButton.setFixedWidth(150)
+    self.registerButton.toolTip = 'Registers SmartTemplate robot to scanner'
+    self.registerButton.enabled = False
+    self.correctCalibrationButton = qt.QPushButton('Correct calibration')
+    self.correctCalibrationButton.setFixedWidth(150)
+    self.correctCalibrationButton.toolTip = 'Correct robot insertion joint calibration'
+    self.correctCalibrationButton.enabled = False
+    initButtonLayout.addStretch()
+    initButtonLayout.addWidget(self.loadButton)
+    initButtonLayout.addWidget(self.registerButton)
+    initButtonLayout.addWidget(self.correctCalibrationButton)
+    initButtonLayout.addStretch()
+    robotFormLayout.addRow(initButtonLayout)
+    robotFormLayout.addRow('', qt.QLabel(''))  # Vertical space
+
+    # Robot joints    
+    jointsFrame = qt.QFrame()
+    jointsFrame.setFrameShape(qt.QFrame.Box)            # Draw a rectangular border
+    jointsFrame.setFrameShadow(qt.QFrame.Sunken)        # Optional: sunken look
+    jointsFrame.setLineWidth(1)
+    jointsFrame.setMinimumHeight(200)
+    self.jointsLayout = qt.QVBoxLayout(jointsFrame)
+    robotFormLayout.addRow(jointsFrame)
 
     # Robot position
     positionLayout = qt.QHBoxLayout()
-    positionLabel = qt.QLabel('Position:')
-    positionLabel.setFixedWidth(50)
-    self.positionRASTextbox = qt.QLineEdit('(---, ---, ---) RAS')
-    self.positionRASTextbox.setFixedWidth(180)
+    positionRASLabel = qt.QLabel('RAS:')
+    self.positionRASTextbox = qt.QLineEdit('( ---.--, ---.--, ---.-- )')
     self.positionRASTextbox.setReadOnly(True)
     self.positionRASTextbox.setStyleSheet('background-color: transparent; border: no border;')
     self.positionRASTextbox.toolTip = 'Robot current position (scanner frame)'
-    self.positionRobotTextbox = qt.QLineEdit('(---, ---, ---) XYZ')
-    self.positionRobotTextbox.setFixedWidth(180)
+    self.positionRASTextbox.setFixedWidth(165)
+    separationLabel = qt.QLabel(' / ')
+    positionLabel = qt.QLabel('XYZ:')
+    self.positionRobotTextbox = qt.QLineEdit('( ---.--, ---.--, ---.-- )')
     self.positionRobotTextbox.setReadOnly(True)
     self.positionRobotTextbox.setStyleSheet('background-color: transparent; border: no border;')
     self.positionRobotTextbox.toolTip = 'Robot current position (robot frame)'
-    positionLayout.addWidget(positionLabel)
-    positionLayout.addWidget(self.positionRASTextbox)
-    positionLayout.addWidget(self.positionRobotTextbox)
-    timestampLabel = qt.QLabel('Timestamp:')
-    timestampLabel.setFixedWidth(70)
-    self.timeStampTextbox = qt.QLineEdit('-- : -- : --.----')
-    self.timeStampTextbox.setFixedWidth(120)
+    self.positionRobotTextbox.setFixedWidth(165)
+    self.timeStampTextbox = qt.QLineEdit('--:--:--.----')
     self.timeStampTextbox.setReadOnly(True)
     self.timeStampTextbox.setStyleSheet('background-color: transparent; border: no border;')
     self.timeStampTextbox.toolTip = 'Timestamp from last shape measurement'
-    positionLayout.addWidget(timestampLabel)
+    
+    positionLayout.addWidget(positionRASLabel)
+    positionLayout.addWidget(self.positionRASTextbox)
+    positionLayout.addWidget(separationLabel)
+    positionLayout.addWidget(positionLabel)
+    positionLayout.addWidget(self.positionRobotTextbox)
+    positionLayout.addStretch()
     positionLayout.addWidget(self.timeStampTextbox)
     robotFormLayout.addRow(positionLayout)
 
+    robotButtonsLayout = qt.QHBoxLayout() 
+    self.homeButton = qt.QPushButton('HOME')
+    self.homeButton.setFixedWidth(150)
+    self.homeButton.toolTip = 'Go to robot HOME position'
+    self.homeButton.enabled = False
+    self.retractButton = qt.QPushButton('RETRACT')
+    self.retractButton.setFixedWidth(150)
+    self.retractButton.toolTip = 'Fully retract needle'
+    self.retractButton.enabled = False
+
+    robotButtonsLayout.addStretch()
+    robotButtonsLayout.addWidget(self.homeButton)
+    robotButtonsLayout.addWidget(self.retractButton)
+    robotButtonsLayout.addStretch()
+    robotFormLayout.addRow('', qt.QLabel(''))  # Vertical space
+    robotFormLayout.addRow(robotButtonsLayout)
+    robotFormLayout.addRow('', qt.QLabel(''))  # Vertical space
 
     ## Planning collapsible button                 
     ####################################
@@ -165,26 +191,20 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     markupsLayout.addRow('', self.adjustEntryButton)
     markupsLayout.addRow('', qt.QLabel(''))  # Vertical space
 
-    commandButtonsLayout = qt.QHBoxLayout()
-    self.homeButton = qt.QPushButton('HOME')
-    self.homeButton.toolTip = 'Go to robot HOME position'
-    self.homeButton.enabled = False
-    commandButtonsLayout.addWidget(self.homeButton)
-
-    self.retractButton = qt.QPushButton('RETRACT')
-    self.retractButton.toolTip = 'Fully retract needle'
-    self.retractButton.enabled = False
-    commandButtonsLayout.addWidget(self.retractButton)
-    
+    commandButtonsLayout = qt.QHBoxLayout()    
     self.alignButton = qt.QPushButton('ALIGN')
-    self.alignButton.toolTip = 'Align robot for insertion'
+    self.alignButton.setFixedWidth(150)
+    self.alignButton.toolTip = 'Align robot to entry'
     self.alignButton.enabled = False
-    commandButtonsLayout.addWidget(self.alignButton)
-
     self.approachButton = qt.QPushButton('APPROACH')
+    self.approachButton.setFixedWidth(150)
     self.approachButton.toolTip = 'Approach robot to skin'
     self.approachButton.enabled = False
+
+    commandButtonsLayout.addStretch()
+    commandButtonsLayout.addWidget(self.alignButton)
     commandButtonsLayout.addWidget(self.approachButton)
+    commandButtonsLayout.addStretch()
     markupsLayout.addRow(commandButtonsLayout)
 
 ## Insertion collapsible button                
@@ -216,27 +236,29 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.recordInsertionButton.toolTip = "Record tip positions during insertion"
     self.recordInsertionButton.enabled = False
     trackTipLayout.addWidget(self.recordInsertionButton)
-
     insertionFormLayout.addRow(trackTipLayout)
-
     insertionFormLayout.addRow('', qt.QLabel(''))  # Vertical space
     
     insertionButtonsLayout = qt.QHBoxLayout()
     self.toTargetButton= qt.QPushButton('Insert to target')
+    self.toTargetButton.setFixedWidth(150)
     self.toTargetButton.toolTip = 'Insert the needle to target'
     self.toTargetButton.enabled = False
-    insertionButtonsLayout.addWidget(self.toTargetButton)
 
     self.stepButton= qt.QPushButton('Insert or Retract by =>')
+    self.stepButton.setFixedWidth(150)    
     self.stepButton.toolTip = 'Insert the needle stepwise a certain lenght'
     self.stepButton.enabled = False
-    insertionButtonsLayout.addWidget(self.stepButton)
 
     self.stepSizeTextbox = qt.QLineEdit('20.0')
     self.stepSizeTextbox.setReadOnly(False)
     self.stepSizeTextbox.setMaximumWidth(50)
+    insertionButtonsLayout.addStretch()
+    insertionButtonsLayout.addWidget(self.toTargetButton)
+    insertionButtonsLayout.addWidget(self.stepButton)
     insertionButtonsLayout.addWidget(self.stepSizeTextbox)
     insertionButtonsLayout.addWidget(qt.QLabel('mm'))
+    insertionButtonsLayout.addStretch()
     insertionFormLayout.addRow(insertionButtonsLayout)
 
     self.layout.addStretch(1)
@@ -420,10 +442,16 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
       self.addJoints()
 
   def format3DPoint(self, point, frame=None, decimals=2):
-    formatted = f"({point[0]:.{decimals}f}, {point[1]:.{decimals}f}, {point[2]:.{decimals}f})"
+    def format_coord(value):
+      # Format: space for sign + 3 digits + dot + decimals
+      # Total width = sign + 3 + 1 + decimals → e.g. for 2 decimals: width = 7
+      return f"{value:+7.{decimals}f}".replace("+", " ")
+
+    formatted = f"({format_coord(point[0])}, {format_coord(point[1])}, {format_coord(point[2])} )"
     if frame:
-        formatted += f" {frame}"
+      formatted += f" {frame}"
     return formatted
+
 
   def addJoints(self):
     (self.jointNames, self.jointLimits) = self.logic.getDefinedJoints()
@@ -436,49 +464,50 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
       self.sliders = {}
       self.text_boxes = {}
       self.current_value_boxes = {}  # For 'Current [mm]' textboxes
-      for joint in self.jointNames:
-          # Remove '_joint' suffix and capitalize the label
-          joint_label = qt.QLabel(f'{joint.replace("_joint", "").capitalize()}')
-          # Slider for current joint state
-          slider = qt.QSlider(qt.Qt.Horizontal)
-          limits = self.jointLimits[joint]
-          slider.setMinimum(int(limits['min']))
-          slider.setMaximum(int(limits['max']))
-          slider.setEnabled(False)  # Non-editable
-          slider.setValue(self.jointValues[joint])
-          # Min and Max labels
-          min_label = qt.QLabel(f"{limits['min']}")
-          max_label = qt.QLabel(f"{limits['max']}")
-          # Layout for slider and labels
-          slider_layout = qt.QHBoxLayout()
-          slider_layout.addWidget(min_label)
-          slider_layout.addWidget(slider)
-          slider_layout.addWidget(max_label)
-          # Text box for current joint value (non-editable)
-          current_value_box = qt.QLineEdit('0.0')
-          current_value_box.setReadOnly(True)
-          current_value_box.setStyleSheet("background: transparent; border: none; color: black;")
-          current_value_box.setText(str(self.jointValues[joint]))
-          current_value_label = qt.QLabel('Current [mm]:')
-          # Layout for current joint values
-          value_layout = qt.QHBoxLayout()
-          value_layout.addWidget(current_value_label)
-          value_layout.addWidget(current_value_box)
-          # Layout for each joint
-          joint_layout = qt.QVBoxLayout()
-          joint_layout.addWidget(joint_label)
-          joint_layout.addLayout(slider_layout)
-          joint_layout.addLayout(value_layout)
-          # Add the joint layout to the main joint controls layout
-          self.jointsLayout.addLayout(joint_layout)
-          # Add a horizontal separator line after each joint section
+      for i, joint in enumerate(self.jointNames):
+        # Remove '_joint' suffix and capitalize the label
+        joint_label = qt.QLabel(f'{joint.replace("_joint", "").capitalize()}')
+        # Slider for current joint state
+        slider = qt.QSlider(qt.Qt.Horizontal)
+        limits = self.jointLimits[joint]
+        slider.setMinimum(int(limits['min']))
+        slider.setMaximum(int(limits['max']))
+        slider.setEnabled(False)  # Non-editable
+        slider.setValue(self.jointValues[joint])
+        # Min and Max labels
+        min_label = qt.QLabel(f"{limits['min']}")
+        max_label = qt.QLabel(f"{limits['max']}")
+        # Layout for slider and labels
+        slider_layout = qt.QHBoxLayout()
+        slider_layout.addWidget(min_label)
+        slider_layout.addWidget(slider)
+        slider_layout.addWidget(max_label)
+        # Text box for current joint value (non-editable)
+        current_value_box = qt.QLineEdit('0.0')
+        current_value_box.setReadOnly(True)
+        current_value_box.setStyleSheet("background: transparent; border: none; color: black;")
+        current_value_box.setText(str(self.jointValues[joint]))
+        current_value_label = qt.QLabel('Current [mm]:')
+        # Layout for current joint values
+        value_layout = qt.QHBoxLayout()
+        value_layout.addWidget(current_value_label)
+        value_layout.addWidget(current_value_box)
+        # Layout for each joint
+        joint_layout = qt.QVBoxLayout()
+        joint_layout.addWidget(joint_label)
+        joint_layout.addLayout(slider_layout)
+        joint_layout.addLayout(value_layout)
+        # Add the joint layout to the main joint controls layout
+        self.jointsLayout.addLayout(joint_layout)
+        # Add a horizontal separator line between joints
+        if i < len(self.jointNames) - 1:
           separator_line = qt.QFrame()
           separator_line.setFrameShape(qt.QFrame.HLine)
           separator_line.setFrameShadow(qt.QFrame.Sunken)
           self.jointsLayout.addWidget(separator_line)
-          # Save references
-          self.sliders[joint] = slider
-          self.current_value_boxes[joint] = current_value_box
+        # Save references
+        self.sliders[joint] = slider
+        self.current_value_boxes[joint] = current_value_box
 
 
   # Update sliders and text boxes with current joint values
@@ -497,12 +526,12 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     robotPositionXYZ, robotTimeStamp = self.logic.getRobotPosition()
     #print('Time: %s / Tip (RAS): %s' %(timestamp,tipCoordinates))
     if robotPositionXYZ is not None:
-      self.positionRobotTextbox.setText(self.format3DPoint(robotPositionXYZ, 'XYZ'))
+      self.positionRobotTextbox.setText(self.format3DPoint(robotPositionXYZ))
     else:
       self.positionRobotTextbox.setText('(---, ---, ---)')
     robotPositionRAS, _ = self.logic.getRobotPosition('world')
     if robotPositionRAS is not None:
-      self.positionRASTextbox.setText(self.format3DPoint(robotPositionRAS, 'RAS'))
+      self.positionRASTextbox.setText(self.format3DPoint(robotPositionRAS))
     else:
       self.positionRASTextbox.setText('(---, ---, ---)')
     self.timeStampTextbox.setText(robotTimeStamp)
