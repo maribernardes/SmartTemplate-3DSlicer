@@ -1103,12 +1103,15 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     entry_scanner = [*self.getPlanningPoint(planningMarkupsNode, 'ENTRY'), 1.0]       # Get entry point in scanner coordinates
     entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner) # Convert to robot coordinates
     desired_position = [entry[0], 0.0, entry[2]]
+    desired_position_scanner = self.mat_RobotToScanner.MultiplyPoint([desired_position[0], desired_position[1], desired_position[2], 1.0])
+    print('Desired position = [%.4f, %.4f, %.4f] RAS' % (desired_position_scanner[0], desired_position_scanner[1], desired_position_scanner[2]))
     self.sendDesiredPosition(desired_position)
     return True
     
   # Place robot at the skin entry point
   def approachSkin(self, planningMarkupsNode):
     entry_scanner = [*self.getPlanningPoint(planningMarkupsNode, 'ENTRY'), 1.0]        # Get entry point in scanner coordinates
+    print('Desired position = [%.4f, %.4f, %.4f] RAS' % (entry_scanner[0], entry_scanner[1], entry_scanner[2]))
     entry = self.mat_ScannerToRobot.MultiplyPoint(entry_scanner)  # Convert to robot coordinates
     self.sendDesiredPosition([entry[0], entry[1], entry[2]])
     return True
@@ -1125,6 +1128,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
   # Insert robot to target depth
   def toTarget(self, planningMarkupsNode):
     target_scanner = [*self.getPlanningPoint(planningMarkupsNode,'TARGET'), 1.0]
+    print('Desired position = [%.4f, %.4f, %.4f] RAS' % (target_scanner[0], target_scanner[1], target_scanner[2]))
     target = self.mat_ScannerToRobot.MultiplyPoint(target_scanner)
     goal, _ = self.getRobotPosition()
     goal[1] = target[1]
@@ -1135,6 +1139,8 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
   def insertStep(self, stepSize):
     goal, _ = self.getRobotPosition()
     goal[1] += stepSize
+    goal_scanner = self.mat_RobotToScanner.MultiplyPoint([goal[0], goal[1], goal[2], 1.0])
+    print('Desired position = [%.4f, %.4f, %.4f] RAS' % (goal_scanner[0], goal_scanner[1], goal_scanner[2]))
     self.sendDesiredPosition(goal)
     return True
     
