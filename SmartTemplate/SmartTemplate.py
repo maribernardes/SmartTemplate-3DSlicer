@@ -185,10 +185,16 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     markupsLayout.addRow('Planned points:', self.planningSelector)
     
     # Adjust Entry button 
+    planningButtonsLayout = qt.QHBoxLayout()   
     self.adjustEntryButton = qt.QPushButton('Adjust ENTRY to TARGET')
     self.adjustEntryButton.toolTip = 'Adjust ENTRY to have it aligned to TARGET'
     self.adjustEntryButton.enabled = False
-    markupsLayout.addRow('', self.adjustEntryButton)
+    self.publishPlanningButton = qt.QPushButton('Publish Planning')
+    self.publishPlanningButton.toolTip = 'Publish ENTRY and TARGET to ROS2'
+    self.publishPlanningButton.enabled = False
+    planningButtonsLayout.addWidget(self.adjustEntryButton)
+    planningButtonsLayout.addWidget(self.publishPlanningButton)
+    markupsLayout.addRow('', planningButtonsLayout)
     markupsLayout.addRow('', qt.QLabel(''))  # Vertical space
 
     commandButtonsLayout = qt.QHBoxLayout()    
@@ -302,6 +308,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.registerButton.connect('clicked(bool)', self.registerRobot)
     self.correctCalibrationButton.connect('clicked(bool)', self.correctCalibration)
     self.adjustEntryButton.connect('clicked(bool)', self.adjustEntry)
+    self.publishPlanningButton.connect('clicked(bool)', self.publishPlanning)
     self.retractButton.connect('clicked(bool)', self.retractNeedle)
     self.homeButton.connect('clicked(bool)', self.homeRobot)
     self.alignButton.connect('clicked(bool)', self.alignForInsertion)
@@ -429,6 +436,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.registerButton.enabled = zFrameSelected and self.isRobotLoaded
     self.correctCalibrationButton.enabled = robotRegistered and self.isRobotLoaded and self.isTipTracked
     self.adjustEntryButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
+    self.publishPlanningButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
     self.homeButton.enabled = self.isRobotLoaded
     self.retractButton.enabled = self.isRobotLoaded
     self.stepButton.enabled = self.isRobotLoaded
@@ -572,10 +580,15 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     print(newZTransformNode.GetName())
     self.updateGUI()
 
-
   def adjustEntry(self):
     print('UI: adjustEntry()')
     self.logic.adjustEntry(self.planningSelector.currentNode())
+    print('____________________')
+    self.updateGUI()
+
+  def publishPlanning(self):
+    print('UI: publishPlanning()')
+    self.logic.publishPlanning(self.planningSelector.currentNode())
     print('____________________')
     self.updateGUI()
 
@@ -634,8 +647,9 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.pubWorld = self.rosNode.GetPublisherNodeByTopic('/world_pose')
     self.pubGoal = self.rosNode.GetPublisherNodeByTopic('/desired_position')
     self.pubCommand = self.rosNode.GetPublisherNodeByTopic('/desired_command')
-    self.pubEntry = self.rosNode.GetPublisherNodeByTopic('/planning/skin_entry')
-    self.pubTarget = self.rosNode.GetPublisherNodeByTopic('/planning/target')
+    self.pubEntry = self.rosNode.GetPublisherNodeByTopic('/planned_entry')
+    self.pubTarget = self.rosNode.GetPublisherNodeByTopic('/planned_target')
+    self.pubTrackedTip = self.rosNode.GetPublisherNodeByTopic('/tracked_tip')
     self.subJoints = self.rosNode.GetSubscriberNodeByTopic('/joint_states')
     self.subPosition = self.rosNode.GetSubscriberNodeByTopic('/stage/state/guide_pose')
     if self.subJoints is not None:
@@ -966,9 +980,11 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       if self.pubCommand is None:
         self.pubCommand = self.rosNode.CreateAndAddPublisherNode('String', '/desired_command')
       if self.pubEntry is None:
-        self.pubEntry = self.rosNode.CreateAndAddPublisherNode('Point', '/planning/skin_entry')
+        self.pubEntry = self.rosNode.CreateAndAddPublisherNode('Point', '/planned_entry')
       if self.pubTarget is None:
-        self.pubTarget = self.rosNode.CreateAndAddPublisherNode('Point', '/planning/target')
+        self.pubTarget = self.rosNode.CreateAndAddPublisherNode('Point', '/planned_target')
+      if self.pubTrackedTip is None:
+        self.pubTrackedTip = self.rosNode.CreateAndAddPublisherNode('Point', '/tracked_tip')
       if self.subJoints is None:
         self.subJoints = self.rosNode.CreateAndAddSubscriberNode('JointState', '/joint_states')
         self.observeJoints = self.subJoints.AddObserver('ModifiedEvent', self.onSubJointsMsg)
@@ -1159,21 +1175,24 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     planningMarkupsNode.SetLocked(True)
     return True
 
-  def sendPlanning(self, entry, target):
+  def publishPlanning(self, planningMarkupsNode):
+    # Get Points in scanner coordinates
+    entry_scanner = [*self.getPlanningPoint(planningMarkupsNode,'ENTRY'), 1.0]
+    target_scanner = [*self.getPlanningPoint(planningMarkupsNode,'TARGET'), 1.0]
     # Publish entry message
     entry_msg = self.pubEntry.GetBlankMessage()
-    entry_msg.SetX(entry[0])
-    entry_msg.SetY(entry[1])
-    entry_msg.SetZ(entry[2])
+    entry_msg.SetX(entry_scanner[0])
+    entry_msg.SetY(entry_scanner[1])
+    entry_msg.SetZ(entry_scanner[2])
     self.pubEntry.Publish(entry_msg)
-    print('Sent entry point: %s' %(entry))
+    print('Published entry = [%.4f, %.4f, %.4f] RAS' % (entry_scanner[0], entry_scanner[1], entry_scanner[2]))
     # Publish target message
     target_msg = self.pubTarget.GetBlankMessage()
-    target_msg.SetX(target[0])
-    target_msg.SetY(target[1])
-    target_msg.SetZ(target[2])
+    target_msg.SetX(target_scanner[0])
+    target_msg.SetY(target_scanner[1])
+    target_msg.SetZ(target_scanner[2])
     self.pubTarget.Publish(target_msg)
-    print('Sent target: %s' %(target))
+    print('Published target = [%.4f, %.4f, %.4f] RAS' % (target_scanner[0], target_scanner[1], target_scanner[2]))
 
   def sendDesiredPosition(self, goal):
     # Publish desired_position message
@@ -1212,8 +1231,16 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     robotXYZ, _ = self.getRobotPosition()
     
     if tipTracked:
+      print('Tracked')
       moduleParameterNode = self.getParameterNode()     # Update module parameter to help synch logic and gui
       moduleParameterNode.SetParameter('TipTracked', 'True')
+      # Publish tracked_tip message
+      tip_msg = self.pubTrackedTip.GetBlankMessage()
+      tip_msg.SetX(tipPosition[0])
+      tip_msg.SetY(tipPosition[1])
+      tip_msg.SetZ(tipPosition[2])
+      self.pubTrackedTip.Publish(tip_msg)
+
     
     # Update log
     if tipTracked and self.loggingActive:
@@ -1241,7 +1268,10 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
   def stopAndSaveLogging(self, planningNode):
       self.loggingActive = False
       # Extract insertion number from planning node name
-      name = planningNode.GetName()
+      if planningNode is None:
+        name = ''
+      else:
+        name = planningNode.GetName()
       insertion_number = ''.join(filter(str.isdigit, name))
       node_name = f'Insertion_{insertion_number}'
 
