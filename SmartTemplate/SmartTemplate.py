@@ -133,7 +133,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.timeStampTextbox = qt.QLineEdit('--:--:--.----')
     self.timeStampTextbox.setReadOnly(True)
     self.timeStampTextbox.setStyleSheet('background-color: transparent; border: no border;')
-    self.timeStampTextbox.toolTip = 'Timestamp from last shape measurement'
+    self.timeStampTextbox.toolTip = 'Timestamp from last robot position'
     
     positionLayout.addWidget(positionRASLabel)
     positionLayout.addWidget(self.positionRASTextbox)
@@ -651,11 +651,12 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.pubTarget = self.rosNode.GetPublisherNodeByTopic('/planned_target')
     self.pubTrackedTip = self.rosNode.GetPublisherNodeByTopic('/tracked_tip')
     self.subJoints = self.rosNode.GetSubscriberNodeByTopic('/joint_states')
-    self.subPosition = self.rosNode.GetSubscriberNodeByTopic('/stage/state/guide_pose')
+    self.lookupPosition = self.rosNode.GetTf2LookupNodeByParentChild('world','needle_link')
     if self.subJoints is not None:
       self.observeJoints = self.subJoints.AddObserver('ModifiedEvent', self.onSubJointsMsg)
-    if self.subPosition is not None:
-      self.observePosition = self.subPosition.AddObserver('ModifiedEvent', self.onSubPositionMsg)  
+    if self.lookupPosition is not None:
+      print('loaded existing lookup')
+      self.observePosition = self.lookupPosition.AddObserver(slicer.vtkMRMLTransformNode.TransformModifiedEvent, self.onPositionUpdate)
 
     self.link_names = None
     self.joint_names = None
@@ -838,20 +839,17 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       self.jointValues.SetAttribute(joint_name, str(1000*joint_value))  # Triggers observer
     self.jointValues.Modified()
 
-  # Callback for /joints_state messages
-  def onSubPositionMsg(self, caller=None, event=None):
-    position_msg = self.subPosition.GetLastMessage()
+  # Callback for lookup update
+  def onPositionUpdate(self, caller=None, event=None):
     # Update timestamp string node
-    stamp = position_msg.GetHeader().GetStamp()
-    timestamp = self.formatTimestampToLocalTimeText(stamp.GetSec(), stamp.GetNanosec())
-    self.robotPositionTimestampNode.SetText(timestamp)
+    timestamp = time.time()
+    dt = datetime.datetime.fromtimestamp(timestamp)
+    logTimestamp = dt.strftime('%H:%M:%S.%f')[:-3]
+    self.robotPositionTimestampNode.SetText(logTimestamp)
     self.robotPositionTimestampNode.Modified()
-    # Update robot position node
-    point =  position_msg.GetPoint()
+    # Update the position value
     robotPositionMatrix = vtk.vtkMatrix4x4()
-    robotPositionMatrix.SetElement(0,3, point.GetX())
-    robotPositionMatrix.SetElement(1,3, point.GetY())
-    robotPositionMatrix.SetElement(2,3, point.GetZ())
+    self.lookupPosition.GetMatrixTransformToParent(robotPositionMatrix)
     self.robotPositionNode.SetMatrixTransformToParent(robotPositionMatrix)
     self.robotPositionNode.Modified()
 
@@ -988,9 +986,10 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       if self.subJoints is None:
         self.subJoints = self.rosNode.CreateAndAddSubscriberNode('JointState', '/joint_states')
         self.observeJoints = self.subJoints.AddObserver('ModifiedEvent', self.onSubJointsMsg)
-      if self.subPosition is None:
-        self.subPosition = self.rosNode.CreateAndAddSubscriberNode('PointStamped', '/stage/state/guide_pose')
-        self.observePosition = self.subPosition.AddObserver('ModifiedEvent', self.onSubPositionMsg)  
+      if self.lookupPosition is None:
+        print('create lookup')
+        self.lookupPosition = self.rosNode.CreateAndAddTf2LookupNode('world','needle_link')
+        self.observePosition = self.lookupPosition.AddObserver(slicer.vtkMRMLTransformNode.TransformModifiedEvent, self.onPositionUpdate)
       print('Robot initialized')
     else:
       # Should not enter here
