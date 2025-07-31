@@ -294,7 +294,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     # These connections ensure that we synch robot info with the logic
     self.addObserver(self.logic.jointValues, vtk.vtkCommand.ModifiedEvent, self.onJointsChange)
-    self.addObserver(self.logic.robotPositionNode, vtk.vtkCommand.ModifiedEvent, self.onPositionChange)
+    #self.addObserver(self.logic.lookupPosition, vtk.vtkCommand.ModifiedEvent, self.onPositionChange)
     self.addObserver(self.logic.trackedTipNode, slicer.vtkMRMLTransformNode.TransformModifiedEvent, self.onTrackedTipChange)
 
     # These connections ensure that whenever user changes some settings on the GUI, that is saved in the MRML scene
@@ -528,11 +528,8 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
       self.jointValues[joint] = float(caller.GetAttribute(joint))
       self.sliders[joint].setValue(self.jointValues[joint])
       self.current_value_boxes[joint].setText(f"{self.jointValues[joint]:.2f}")
-
   # Update text boxes with current position values
-  def onPositionChange(self, caller=None, event=None):
     robotPositionXYZ, robotTimeStamp = self.logic.getRobotPosition()
-    #print('Time: %s / Tip (RAS): %s' %(timestamp,tipCoordinates))
     if robotPositionXYZ is not None:
       self.positionRobotTextbox.setText(self.format3DPoint(robotPositionXYZ))
     else:
@@ -651,12 +648,13 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.pubTarget = self.rosNode.GetPublisherNodeByTopic('/planned_target')
     self.pubTrackedTip = self.rosNode.GetPublisherNodeByTopic('/tracked_tip')
     self.subJoints = self.rosNode.GetSubscriberNodeByTopic('/joint_states')
-    self.lookupPosition = self.rosNode.GetTf2LookupNodeByParentChild('world','needle_link')
+    self.eePoseScanner = self.rosNode.GetTf2LookupNodeByParentChild('world','needle_link')
+    self.eePoseRobot = self.rosNode.GetTf2LookupNodeByParentChild('base_link','needle_link')
+
     if self.subJoints is not None:
       self.observeJoints = self.subJoints.AddObserver('ModifiedEvent', self.onSubJointsMsg)
-    if self.lookupPosition is not None:
-      print('loaded existing lookup')
-      self.observePosition = self.lookupPosition.AddObserver(slicer.vtkMRMLTransformNode.TransformModifiedEvent, self.onPositionUpdate)
+    if self.eePoseScanner is not None:
+      self.observePosition = self.eePoseScanner.AddObserver(slicer.vtkMRMLTransformNode.TransformModifiedEvent, self.onPositionUpdate)
 
     self.link_names = None
     self.joint_names = None
@@ -687,7 +685,6 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
 
     # MRML Objects for robot position
     self.initializeInternalNodes()
-    self.initializeRobotPosition()
     self.initializeTrackedTip()
 
 
@@ -719,12 +716,12 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       self.robotPositionTimestampNode = slicer.vtkMRMLTextNode()
       self.robotPositionTimestampNode.SetName('RobotPositionTimestamp')
       slicer.mrmlScene.AddNode(self.robotPositionTimestampNode)
-    self.robotPositionNode = slicer.util.getFirstNodeByClassByName('vtkMRMLLinearTransformNode','RobotPositionTransform')
-    if self.robotPositionNode is None:
-        self.robotPositionNode = slicer.vtkMRMLLinearTransformNode()
-        self.robotPositionNode.SetName('RobotPositionTransform')
-        self.robotPositionNode.SetHideFromEditors(True)
-        slicer.mrmlScene.AddNode(self.robotPositionNode)
+    #self. robotPositionNode= slicer.util.getFirstNodeByClassByName('vtkMRMLLinearTransformNode','RobotPositionTransform')
+    #if self.robotPositionNode is None:
+    #    self.robotPositionNode = slicer.vtkMRMLLinearTransformNode()
+    #    self.robotPositionNode.SetName('RobotPositionTransform')
+    #    self.robotPositionNode.SetHideFromEditors(True)
+    #    slicer.mrmlScene.AddNode(self.robotPositionNode)
     self.robotPositionMarkupsNode= slicer.util.getFirstNodeByName('RobotPosition', className='vtkMRMLMarkupsFiducialNode')
     if self.robotPositionMarkupsNode is None:
       self.robotPositionMarkupsNode = slicer.vtkMRMLMarkupsFiducialNode()
@@ -774,8 +771,9 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         self.robotPositionMarkupsNode.GetDisplayNode().SetGlyphScale(1.5)
         displayNode.SetVisibility(False)
         displayNode.SetSelectedColor(1.0, 1.0, 1.0)
-    self.robotPositionMarkupsNode.SetAndObserveTransformNodeID(self.robotPositionNode.GetID())
-    self.robotPositionNode.SetAndObserveTransformNodeID(self.robotToScannerTransformNode.GetID())
+    #self.robotPositionMarkupsNode.SetAndObserveTransformNodeID(self.robotPositionNode.GetID())
+    #self.robotPositionNode.SetAndObserveTransformNodeID(self.robotToScannerTransformNode.GetID())
+    self.robotPositionMarkupsNode.SetAndObserveTransformNodeID(self.eePoseScanner.GetID())
 
   def initializeTrackedTip(self):
     # Ensure there is only one control point
@@ -848,10 +846,10 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.robotPositionTimestampNode.SetText(logTimestamp)
     self.robotPositionTimestampNode.Modified()
     # Update the position value
-    robotPositionMatrix = vtk.vtkMatrix4x4()
-    self.lookupPosition.GetMatrixTransformToParent(robotPositionMatrix)
-    self.robotPositionNode.SetMatrixTransformToParent(robotPositionMatrix)
-    self.robotPositionNode.Modified()
+    #robotPositionMatrix = vtk.vtkMatrix4x4()
+    #self.lookupPosition.GetMatrixTransformToParent(robotPositionMatrix)
+    #self.robotPositionNode.SetMatrixTransformToParent(robotPositionMatrix)
+    #self.robotPositionNode.Modified()
 
   # Wait for robot models to be ready
   def onRobotModelReady(self, caller=None, event=None):
@@ -986,14 +984,16 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       if self.subJoints is None:
         self.subJoints = self.rosNode.CreateAndAddSubscriberNode('JointState', '/joint_states')
         self.observeJoints = self.subJoints.AddObserver('ModifiedEvent', self.onSubJointsMsg)
-      if self.lookupPosition is None:
-        print('create lookup')
-        self.lookupPosition = self.rosNode.CreateAndAddTf2LookupNode('world','needle_link')
-        self.observePosition = self.lookupPosition.AddObserver(slicer.vtkMRMLTransformNode.TransformModifiedEvent, self.onPositionUpdate)
+      if self.eePoseRobot is None:
+        self.eePoseRobot = self.rosNode.CreateAndAddTf2LookupNode('base_link','needle_link')
+      if self.eePoseScanner is None:
+        self.eePoseScanner = self.rosNode.CreateAndAddTf2LookupNode('world','needle_link')
+        self.observePosition = self.eePoseScanner.AddObserver(slicer.vtkMRMLTransformNode.TransformModifiedEvent, self.onPositionUpdate)
       print('Robot initialized')
     else:
       # Should not enter here
       print('Robot already intialized')
+    self.initializeRobotPosition()
     return True
 
   def registerRobot(self, ZFrameToScanner):
@@ -1063,20 +1063,20 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.registerRobot(newZFrameToScanner)
     return newZFrameToScanner
 
-  def getTranslation(self, linearTransformNode, frame=None):
+  def getTranslation(self, linearTransformNode):
     matrix = vtk.vtkMatrix4x4()
-    if frame == 'world':
-      linearTransformNode.GetMatrixTransformToWorld(matrix)
-    else:
-      linearTransformNode.GetMatrixTransformToParent(matrix)
+    linearTransformNode.GetMatrixTransformToWorld(matrix)
     # Extract translation (last column of matrix, ignoring bottom row)
     tx = matrix.GetElement(0, 3)
     ty = matrix.GetElement(1, 3)
     tz = matrix.GetElement(2, 3)
     return [tx, ty, tz]
-
+  
   def getRobotPosition(self, frame=None):
-    return (self.getTranslation(self.robotPositionNode, frame=frame), self.robotPositionTimestampNode.GetText())
+    if frame == 'world':
+      return (self.getTranslation(self.eePoseScanner), self.robotPositionTimestampNode.GetText())
+    else:
+      return (self.getTranslation(self.eePoseRobot), self.robotPositionTimestampNode.GetText())
 
   def getTipPosition(self):
     return self.getTranslation(self.trackedTipNode)
@@ -1178,20 +1178,23 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     # Get Points in scanner coordinates
     entry_scanner = [*self.getPlanningPoint(planningMarkupsNode,'ENTRY'), 1.0]
     target_scanner = [*self.getPlanningPoint(planningMarkupsNode,'TARGET'), 1.0]
+    # Convert to ZFrame in [m]
+    entry_zframe = self.mat_ScannerToZFrame.MultiplyPoint(entry_scanner)
+    target_zframe = self.mat_ScannerToZFrame.MultiplyPoint(target_scanner)
     # Publish entry message
     entry_msg = self.pubEntry.GetBlankMessage()
-    entry_msg.SetX(entry_scanner[0])
-    entry_msg.SetY(entry_scanner[1])
-    entry_msg.SetZ(entry_scanner[2])
+    entry_msg.SetX(0.001*entry_zframe[0])
+    entry_msg.SetY(0.001*entry_zframe[1])
+    entry_msg.SetZ(0.001*entry_zframe[2])
     self.pubEntry.Publish(entry_msg)
-    print('Published entry = [%.4f, %.4f, %.4f] RAS' % (entry_scanner[0], entry_scanner[1], entry_scanner[2]))
+    print('Published entry = [%.4f, %.4f, %.4f] in [m] ZFrame' % (0.001*entry_zframe[0], 0.001*entry_zframe[1], 0.001*entry_zframe[2]))
     # Publish target message
     target_msg = self.pubTarget.GetBlankMessage()
-    target_msg.SetX(target_scanner[0])
-    target_msg.SetY(target_scanner[1])
-    target_msg.SetZ(target_scanner[2])
+    target_msg.SetX(0.001*target_zframe[0])
+    target_msg.SetY(0.001*target_zframe[1])
+    target_msg.SetZ(0.001*target_zframe[2])
     self.pubTarget.Publish(target_msg)
-    print('Published target = [%.4f, %.4f, %.4f] RAS' % (target_scanner[0], target_scanner[1], target_scanner[2]))
+    print('Published target = [%.4f, %.4f, %.4f] in [m] ZFrame' % (0.001*target_zframe[0], 0.001*target_zframe[1], 0.001*target_zframe[2]))
 
   def sendDesiredPosition(self, goal):
     # Publish desired_position message
@@ -1230,15 +1233,17 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     robotXYZ, _ = self.getRobotPosition()
     
     if tipTracked:
-      print('Tracked')
+      tip_scanner = [*tipPosition, 1.0]
+      tip_zframe = self.mat_ScannerToZFrame.MultiplyPoint(tip_scanner)
       moduleParameterNode = self.getParameterNode()     # Update module parameter to help synch logic and gui
       moduleParameterNode.SetParameter('TipTracked', 'True')
       # Publish tracked_tip message
       tip_msg = self.pubTrackedTip.GetBlankMessage()
-      tip_msg.SetX(tipPosition[0])
-      tip_msg.SetY(tipPosition[1])
-      tip_msg.SetZ(tipPosition[2])
+      tip_msg.SetX(0.001*tip_zframe[0])
+      tip_msg.SetY(0.001*tip_zframe[1])
+      tip_msg.SetZ(0.001*tip_zframe[2])
       self.pubTrackedTip.Publish(tip_msg)
+      print('Published tip = [%.4f, %.4f, %.4f] in [m] ZFrame' % (0.001*tip_zframe[0], 0.001*tip_zframe[1], 0.001*tip_zframe[2]))
 
     
     # Update log
