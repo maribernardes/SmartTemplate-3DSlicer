@@ -650,6 +650,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.subJoints = self.rosNode.GetSubscriberNodeByTopic('/joint_states')
     self.eePoseScanner = self.rosNode.GetTf2LookupNodeByParentChild('world','needle_link')
     self.eePoseRobot = self.rosNode.GetTf2LookupNodeByParentChild('base_link','needle_link')
+    self.basePoseScanner = self.rosNode.GetTf2LookupNodeByParentChild('world','base_link')
 
     if self.subJoints is not None:
       self.observeJoints = self.subJoints.AddObserver('ModifiedEvent', self.onSubJointsMsg)
@@ -716,12 +717,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       self.robotPositionTimestampNode = slicer.vtkMRMLTextNode()
       self.robotPositionTimestampNode.SetName('RobotPositionTimestamp')
       slicer.mrmlScene.AddNode(self.robotPositionTimestampNode)
-    #self. robotPositionNode= slicer.util.getFirstNodeByClassByName('vtkMRMLLinearTransformNode','RobotPositionTransform')
-    #if self.robotPositionNode is None:
-    #    self.robotPositionNode = slicer.vtkMRMLLinearTransformNode()
-    #    self.robotPositionNode.SetName('RobotPositionTransform')
-    #    self.robotPositionNode.SetHideFromEditors(True)
-    #    slicer.mrmlScene.AddNode(self.robotPositionNode)
+    # Robot end-effector position
     self.robotPositionMarkupsNode= slicer.util.getFirstNodeByName('RobotPosition', className='vtkMRMLMarkupsFiducialNode')
     if self.robotPositionMarkupsNode is None:
       self.robotPositionMarkupsNode = slicer.vtkMRMLMarkupsFiducialNode()
@@ -743,11 +739,60 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       self.trackedTipMarkupsNode = slicer.vtkMRMLMarkupsFiducialNode()
       self.trackedTipMarkupsNode.SetName('TrackedTip')
       slicer.mrmlScene.AddNode(self.trackedTipMarkupsNode)
-
+    self.reachableROINode= slicer.util.getFirstNodeByName('ReachableROI', className='vtkMRMLMarkupsROINode')
+    if self.reachableROINode is None:
+      self.reachableROINode = slicer.vtkMRMLMarkupsROINode()
+      self.reachableROINode.SetName('ReachableROI')
+      slicer.mrmlScene.AddNode(self.reachableROINode)
+      
     # Create ScriptedModule node for joint values
     self.jointValues = slicer.util.getFirstNodeByName('JointValues', className='vtkMRMLScriptedModuleNode')
     if self.jointValues is None:
       self.jointValues = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLScriptedModuleNode', 'JointValues')
+
+  def initializeReachableROI(self):
+    if self.reachableROINode is None or self.joint_limits is None:
+        # Should not enter here
+        print('Error: ROI Node and/or joint limits not available')
+        return
+    # Map joint → axis size (mm)
+    def axis_size(joint_key: str) -> float:
+      if self.joint_limits is None:
+        return 0.0
+      lim = self.joint_limits.get(joint_key)
+      if not lim:
+        return 0.0
+      return float(lim['max'] - lim['min'])  # limits are already in mm
+    # TODO: Calculate ROI Size and ROI Center
+    roi_center = [0.0, 0.0, 0.0]
+    roi_size = [0.0, 0.0, 0.0]
+    self.reachableROINode.SetCenter(roi_center)
+    self.reachableROINode.SetSize(roi_size)
+    displayNode = self.reachableROINode.GetDisplayNode()
+    if displayNode is None:
+      self.reachableROINode.CreateDefaultDisplayNodes()
+      displayNode = self.reachableROINode.GetDisplayNode()
+    displayNode.SetFillOpacity(0.15)
+    displayNode.SetVisibility(True)
+    displayNode.SetVisibility2D(True)
+    displayNode.SetOutlineVisibility(True)
+    displayNode.SetSelectedColor(0.2, 0.8, 1.0)
+    displayNode.SetLineThickness(0.5)
+    displayNode.SetTextScale(0.0)
+    displayNode.SetGlyphScale(0.0)
+    displayNode.SetHandlesInteractive(False)  
+    displayNode.SetPointLabelsVisibility(False) 
+    # Calculate ROi sizes
+    sizeX = axis_size('horizontal_joint')   # L-R
+    sizeY = axis_size('insertion_joint')    # P-A
+    sizeZ = axis_size('vertical_joint')     # I-S
+    # Place ROI at robot origin (local center = [0,0,0]), size set from ranges
+    # Note: if limits are not symmetric around 0, this box will be centered at 0 (as requested)
+    self.reachableROINode.SetSize([sizeX, sizeY, sizeZ])
+    self.reachableROINode.SetCenter([0.0, 0.5*sizeY, 0.0])
+    self.reachableROINode.SetAndObserveTransformNodeID(self.basePoseScanner.GetID())
+    self.reachableROINode.SetLocked(True)
+    self.reachableROINode.Modified()
 
   def initializeRobotPosition(self):
     # Ensure there is only one control point
@@ -761,19 +806,14 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     self.robotPositionMarkupsNode.SetLocked(True)
     self.robotPositionMarkupsNode.SetFixedNumberOfControlPoints(True)           
     displayNode = self.robotPositionMarkupsNode.GetDisplayNode()
-    if displayNode:
-        displayNode.SetGlyphScale(1.5)  # 1% glyph size and color
-        displayNode.SetVisibility(False)
-        displayNode.SetSelectedColor(1.0, 1.0, 1.0)
-    else:
-        # If the display node does not exist, create it and set the glyph size and color
-        self.robotPositionMarkupsNode.CreateDefaultDisplayNodes()
-        self.robotPositionMarkupsNode.GetDisplayNode().SetGlyphScale(1.5)
-        displayNode.SetVisibility(False)
-        displayNode.SetSelectedColor(1.0, 1.0, 1.0)
-    #self.robotPositionMarkupsNode.SetAndObserveTransformNodeID(self.robotPositionNode.GetID())
-    #self.robotPositionNode.SetAndObserveTransformNodeID(self.robotToScannerTransformNode.GetID())
+    if displayNode is None:
+      self.robotPositionMarkupsNode.CreateDefaultDisplayNodes()
+      displayNode = self.robotPositionMarkupsNode.GetDisplayNode()
+    displayNode.SetGlyphScale(1.5)  # 1% glyph size and color
+    displayNode.SetVisibility(False)
+    displayNode.SetSelectedColor(1.0, 1.0, 1.0)
     self.robotPositionMarkupsNode.SetAndObserveTransformNodeID(self.eePoseScanner.GetID())
+    
 
   def initializeTrackedTip(self):
     # Ensure there is only one control point
@@ -837,7 +877,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       self.jointValues.SetAttribute(joint_name, str(1000*joint_value))  # Triggers observer
     self.jointValues.Modified()
 
-  # Callback for lookup update
+  # Callback for needle_link lookup update
   def onPositionUpdate(self, caller=None, event=None):
     # Update timestamp string node
     timestamp = time.time()
@@ -845,11 +885,6 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     logTimestamp = dt.strftime('%H:%M:%S.%f')[:-3]
     self.robotPositionTimestampNode.SetText(logTimestamp)
     self.robotPositionTimestampNode.Modified()
-    # Update the position value
-    #robotPositionMatrix = vtk.vtkMatrix4x4()
-    #self.lookupPosition.GetMatrixTransformToParent(robotPositionMatrix)
-    #self.robotPositionNode.SetMatrixTransformToParent(robotPositionMatrix)
-    #self.robotPositionNode.Modified()
 
   # Wait for robot models to be ready
   def onRobotModelReady(self, caller=None, event=None):
@@ -867,6 +902,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       display_node.SetColor(1.0, 0.0, 1.0)
       display_node.SetSliceIntersectionThickness(2)
       caller.RemoveObserver(self.observeRobotModel)
+      self.initializeReachableROI()
 
   # Wait for robot_description parameter and then define link_names, joint_names and joint_limits  
   @vtk.calldata_type(vtk.VTK_OBJECT)
@@ -878,6 +914,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         moduleParameterNode.SetParameter('RobotLoaded', 'True')
         caller.RemoveObserver(self.observeRobotDescription)
         self.observeRobotModel = self.robotNode.AddObserver(slicer.vtkMRMLROS2RobotNode.ReferenceAddedEvent, self.onRobotModelReady)
+        
 
   # Get last lookupNode if available    
   def getLastLookupNode(self):
@@ -984,11 +1021,13 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       if self.subJoints is None:
         self.subJoints = self.rosNode.CreateAndAddSubscriberNode('JointState', '/joint_states')
         self.observeJoints = self.subJoints.AddObserver('ModifiedEvent', self.onSubJointsMsg)
-      if self.eePoseRobot is None:
-        self.eePoseRobot = self.rosNode.CreateAndAddTf2LookupNode('base_link','needle_link')
       if self.eePoseScanner is None:
         self.eePoseScanner = self.rosNode.CreateAndAddTf2LookupNode('world','needle_link')
-        self.observePosition = self.eePoseScanner.AddObserver(slicer.vtkMRMLTransformNode.TransformModifiedEvent, self.onPositionUpdate)
+      if self.eePoseRobot is None:
+        self.eePoseRobot = self.rosNode.CreateAndAddTf2LookupNode('base_link','needle_link')
+        self.observePosition = self.eePoseRobot.AddObserver(slicer.vtkMRMLTransformNode.TransformModifiedEvent, self.onPositionUpdate)
+      if self.basePoseScanner is None:
+        self.basePoseScanner = self.rosNode.CreateAndAddTf2LookupNode('world','base_link')
       print('Robot initialized')
     else:
       # Should not enter here
