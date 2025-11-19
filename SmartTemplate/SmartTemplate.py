@@ -67,6 +67,22 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Load robot button
     robotFormLayout = qt.QFormLayout(robotCollapsibleButton)
     
+   # Load, Register and Correct Calibration buttons
+    initLayout = qt.QHBoxLayout()
+    self.loadButton = qt.QPushButton('Load robot')
+    self.loadButton.setFixedWidth(150)
+    self.loadButton.toolTip = 'Loads SmartTemplate robot in 3DSlicer'
+    self.loadButton.enabled = True    
+    self.removeButton = qt.QPushButton('Remove robot')
+    self.removeButton.setFixedWidth(150)
+    self.removeButton.toolTip = 'Removes SmartTemplate robot from 3DSlicer'
+    self.removeButton.enabled = False    
+    initLayout.addStretch()
+    initLayout.addWidget(self.loadButton)
+    initLayout.addWidget(self.removeButton)
+    initLayout.addStretch()
+    robotFormLayout.addRow(initLayout)
+
     # ZTransform matrix
     registrationLayout = qt.QHBoxLayout()
     self.zTransformSelector = slicer.qMRMLNodeComboBox()
@@ -80,16 +96,6 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.zTransformSelector.setMRMLScene(slicer.mrmlScene)
     self.zTransformSelector.setToolTip('Select the ZFrameToScanner Transform')
     ZTransformLabel = qt.QLabel('ZTransform:')
-    registrationLayout.addWidget(ZTransformLabel)
-    registrationLayout.addWidget(self.zTransformSelector)
-    robotFormLayout.addRow(registrationLayout)
-
-    # Load, Register and Correct Calibration buttons
-    initButtonLayout = qt.QHBoxLayout()
-    self.loadButton = qt.QPushButton('Load')
-    self.loadButton.setFixedWidth(150)
-    self.loadButton.toolTip = 'Loads SmartTemplate robot in 3DSlicer'
-    self.loadButton.enabled = True    
     self.registerButton = qt.QPushButton('Register')
     self.registerButton.setFixedWidth(150)
     self.registerButton.toolTip = 'Registers SmartTemplate robot to scanner'
@@ -98,12 +104,11 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     self.correctCalibrationButton.setFixedWidth(150)
     self.correctCalibrationButton.toolTip = 'Correct robot insertion joint calibration'
     self.correctCalibrationButton.enabled = False
-    initButtonLayout.addStretch()
-    initButtonLayout.addWidget(self.loadButton)
-    initButtonLayout.addWidget(self.registerButton)
-    initButtonLayout.addWidget(self.correctCalibrationButton)
-    initButtonLayout.addStretch()
-    robotFormLayout.addRow(initButtonLayout)
+    registrationLayout.addWidget(ZTransformLabel)
+    registrationLayout.addWidget(self.zTransformSelector)
+    registrationLayout.addWidget(self.registerButton)
+    registrationLayout.addWidget(self.correctCalibrationButton)    
+    robotFormLayout.addRow(registrationLayout)
     robotFormLayout.addRow('', qt.QLabel(''))  # Vertical space
 
     # Robot joints    
@@ -305,6 +310,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     
     # Connect Qt widgets to event calls
     self.loadButton.connect('clicked(bool)', self.loadRobot)
+    self.removeButton.connect('clicked(bool)', self.removeRobot)
     self.registerButton.connect('clicked(bool)', self.registerRobot)
     self.correctCalibrationButton.connect('clicked(bool)', self.correctCalibration)
     self.adjustEntryButton.connect('clicked(bool)', self.adjustEntry)
@@ -433,6 +439,7 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     
     # Update buttons accordingly
     self.loadButton.enabled = not self.isRobotLoaded
+    self.removeButton.enabled = self.isRobotLoaded
     self.registerButton.enabled = zFrameSelected and self.isRobotLoaded
     self.correctCalibrationButton.enabled = robotRegistered and self.isRobotLoaded and self.isTipTracked
     self.adjustEntryButton.enabled = pointsSelected and robotRegistered and self.isRobotLoaded
@@ -558,6 +565,12 @@ class SmartTemplateWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
   def loadRobot(self):
     print('UI: loadRobot()')
     self.logic.loadRobot()
+    print('____________________')
+    self.updateGUI()
+
+  def removeRobot(self):
+    print('UI: removeRobot()')
+    self.logic.removeRobot()
     print('____________________')
     self.updateGUI()
 
@@ -704,6 +717,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       parameterNode.SetParameter('TipTracked', 'False')  
 
   def initializeInternalNodes(self):
+    self.robotNode = self.rosNode.GetRobotNodeByName('smart_template')
     # Robot to Scanner Transform node
     self.robotToScannerTransformNode = slicer.util.getFirstNodeByClassByName('vtkMRMLLinearTransformNode','RobotToScannerTransform')
     if self.robotToScannerTransformNode is None:
@@ -750,6 +764,12 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     if self.jointValues is None:
       self.jointValues = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLScriptedModuleNode', 'JointValues')
 
+  def hideReachableROI(self):
+    displayNode = self.reachableROINode.GetDisplayNode()
+    if displayNode is not None:
+      displayNode.SetVisibility(False)
+      displayNode.SetVisibility2D(False)
+  
   def initializeReachableROI(self):
     if self.reachableROINode is None or self.joint_limits is None:
         # Should not enter here
@@ -902,7 +922,6 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       display_node.SetColor(1.0, 0.0, 1.0)
       display_node.SetSliceIntersectionThickness(2)
       caller.RemoveObserver(self.observeRobotModel)
-      self.initializeReachableROI()
 
   # Wait for robot_description parameter and then define link_names, joint_names and joint_limits  
   @vtk.calldata_type(vtk.VTK_OBJECT)
@@ -915,7 +934,6 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         caller.RemoveObserver(self.observeRobotDescription)
         self.observeRobotModel = self.robotNode.AddObserver(slicer.vtkMRMLROS2RobotNode.ReferenceAddedEvent, self.onRobotModelReady)
         
-
   # Get last lookupNode if available    
   def getLastLookupNode(self):
     N_lookup = self.robotNode.GetNumberOfNodeReferences('lookup')
@@ -931,8 +949,7 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
       print('Parameter node or robot description not available')
       return False
     robot_description = paramNode.GetParameterAsString('robot_description')
-    print('Reading robot description...')
-    print(robot_description)
+    print('Received robot description')
     try:
       root = ET.fromstring(robot_description)
     except ET.ParseError as e:
@@ -1028,12 +1045,43 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
         self.observePosition = self.eePoseRobot.AddObserver(slicer.vtkMRMLTransformNode.TransformModifiedEvent, self.onPositionUpdate)
       if self.basePoseScanner is None:
         self.basePoseScanner = self.rosNode.CreateAndAddTf2LookupNode('world','base_link')
-      print('Robot initialized')
+      print('SmartTemplate initialized')
     else:
       # Should not enter here
-      print('Robot already intialized')
+      print('SmartTemplate already intialized')
     self.initializeRobotPosition()
     return True
+
+  def removeRobot(self):
+    if self.pubWorld is not None:
+      self.rosNode.RemoveAndDeletePublisherNode('/world_pose')
+    if self.pubGoal is not None:
+      self.rosNode.RemoveAndDeletePublisherNode('/desired_position')
+    if self.pubCommand is not None:
+      self.rosNode.RemoveAndDeletePublisherNode('/desired_command')
+    if self.pubEntry is not None:
+      self.rosNode.RemoveAndDeletePublisherNode('/planned_entry')
+    if self.pubTarget is not None:
+      self.rosNode.RemoveAndDeletePublisherNode('/planned_target')
+    if self.pubTrackedTip is not None:
+      self.rosNode.RemoveAndDeletePublisherNode('/tracked_tip')
+    if self.subJoints is not None:
+      self.subJoints.RemoveObserver(self.observeJoints)
+      self.rosNode.RemoveAndDeleteSubscriberNode('/joint_states')
+    if self.eePoseScanner is not None:
+      self.rosNode.RemoveAndDeleteTf2LookupNode('world','needle_link')
+    if self.eePoseRobot is not None:
+      self.eePoseRobot.RemoveObserver(self.observePosition)
+      self.rosNode.RemoveAndDeleteTf2LookupNode('base_link','needle_link')
+    if self.basePoseScanner is not None:
+      self.rosNode.RemoveAndDeleteTf2LookupNode('world','base_link')
+    if self.robotNode is not None:
+      self.rosLogic.RemoveRobot('smart_template')
+      self.robotNode = None
+    self.hideReachableROI()
+    moduleParameterNode = self.getParameterNode()     # Update module parameter to help synch logic and gui
+    moduleParameterNode.SetParameter('RobotLoaded', 'False')
+    print('SmartTemplate removed')
 
   def registerRobot(self, ZFrameToScanner):
     if self.robotNode is None:
@@ -1060,6 +1108,8 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
     # Update robot position markups node
     displayNode = self.robotPositionMarkupsNode.GetDisplayNode()
     displayNode.SetVisibility(True)
+
+    self.initializeReachableROI()
     return True
   
   # Correct calibration error
@@ -1193,8 +1243,9 @@ class SmartTemplateLogic(ScriptedLoadableModuleLogic):
   def insertStep(self, stepSize):
     goal, _ = self.getRobotPosition()
     goal[1] += stepSize
-    goal_scanner = self.mat_RobotToScanner.MultiplyPoint([goal[0], goal[1], goal[2], 1.0])
-    print('Desired position = [%.4f, %.4f, %.4f] RAS' % (goal_scanner[0], goal_scanner[1], goal_scanner[2]))
+    if self.mat_RobotToScanner is not None: # We are allowing insertions without robot registration
+      goal_scanner = self.mat_RobotToScanner.MultiplyPoint([goal[0], goal[1], goal[2], 1.0])
+      print('Desired position = [%.4f, %.4f, %.4f] RAS' % (goal_scanner[0], goal_scanner[1], goal_scanner[2]))
     self.sendDesiredPosition(goal)
     return True
     
